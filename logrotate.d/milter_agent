@@ -1,8 +1,0 @@
-/var/log/milteragent.log {
-    rotate 90
-    missingok
-    compress
-    postrotate
-      /bin/systemctl reload milteragent.service > /dev/null 2>/dev/null || true
-    endscript
-}

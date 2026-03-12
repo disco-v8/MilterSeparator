@@ -1,399 +1,277 @@
-# MilterAgent
+# MilterSeparator
 
-A high-performance email filtering server implementing the Milter protocol, designed to protect against phishing emails from spoofed legitimate companies and organizations.
+MilterSeparator is a **Milter server for PPAP countermeasures** that automatically separates attachments from incoming emails, compresses them into a password-protected ZIP file, and replaces them with a time-limited, download-count-limited link.
 
-## Overview
+It operates on the Milter (Mail Filter) interface of Postfix / Sendmail.  
+Attachments are extracted on receipt and saved to the server.  
+The email body is rewritten with a download URL, password, and expiry notice before delivery.
 
-MilterAgent is a comprehensive email security solution that implements the Milter protocol for real-time email filtering. Built with Rust and Tokio for maximum performance, it provides advanced phishing detection capabilities while maintaining low latency and high throughput.
+---
 
 ## Features
 
-- **Advanced Phishing Detection**: Comprehensive filters for detecting phishing emails impersonating:
-  - Banks and financial institutions (MUFG, Mizuho, SMBC, etc.)
-  - Delivery and logistics companies (Japan Post, Yamato, Sagawa, DHL, etc.)
-  - Transportation companies (JR, airlines, private railways, etc.)
-  - E-commerce platforms and online services
-- **Spamhaus API Integration**: Automated spam sender reporting:
-  - Automatic detection and reporting of phishing email source IPs
-  - Integration with Spamhaus API for threat intelligence sharing
-  - Configurable API authentication and endpoints
-  - IP whitelist support with CIDR notation for trusted networks
-- **Advanced Regex Support**: Powered by fancy-regex with support for:
-  - Negative lookahead (`(?!...)`) and positive lookahead (`(?=...)`)
-  - Negative lookbehind (`(?<!...)`) and positive lookbehind (`(?<=...)`)
-  - Complex pattern matching for sophisticated email filtering
-- **Unicode Security**: Comprehensive invisible character filtering and normalization:
-  - Removal of invisible characters, BiDi controls, and combining diacritics
-  - Protection against Unicode-based spoofing attacks in all languages
-  - NFKC normalization for consistent text processing
-- **Milter Protocol Support**: Full implementation of the Milter protocol for seamless integration
-- **Real-time Processing**: Asynchronous Rust implementation for handling thousands of concurrent connections
-- **High-Speed Parallel Filtering**: Multi-threaded filter evaluation with parallel execution for maximum performance
-- **Flexible Configuration**: Modular configuration system with include support
-- **Signal Handling**: Graceful shutdown and live configuration reload via SIGHUP/SIGTERM
-- **Cross-platform**: Supports both Unix and Windows environments
-- **Comprehensive Logging**: Configurable log levels with JST timestamp support
+- **Milter protocol implementation** — Compatible with Postfix / Sendmail
+- **Automatic ZIP compression of attachments** — Random password, 3 strength levels
+- **Download management** — Configurable max download count and expiry period
+- **Authentication modes** — minimal / token / basic
+- **Multi-database support** — SQLite3 / MySQL / PostgreSQL, switchable via config
+- **Zero-downtime reload via SIGHUP** — Reload configuration without stopping the service
+- **systemd service support**
+- **logrotate configuration included**
 
-## Architecture
+---
 
-- **Asynchronous Runtime**: Built with Tokio for handling multiple concurrent connections
-- **Modular Design**: Separate modules for parsing, filtering, and protocol handling
-- **Memory Safe**: Written in Rust for guaranteed memory safety and performance
-- **Parallel Filter Engine**: Configurable rule-based filtering system with regex support and multi-threaded parallel processing for high throughput
+## Requirements
+
+| Item | Details |
+|------|---------|
+| OS | Linux (AlmaLinux 9 / Rocky Linux 9 / Ubuntu 22.04 or later recommended) |
+| Rust | edition 2024 / latest stable via Rustup |
+| MTA | Postfix 3.x / Sendmail 8.x (Milter-enabled build) |
+| DB | SQLite3 (default) / MySQL 8.x / MariaDB 10.x / PostgreSQL 14+ |
+
+---
+
+## Build
+
+```bash
+# After cloning the repository
+cd MilterSeparator
+cargo build --release
+```
+
+The binary is generated at `target/release/milter_separator`.
+
+---
 
 ## Installation
 
-### Prerequisites
-
-- Rust 1.80 or later (with Rust 2024 edition support)
-- Cargo package manager
-- Compatible mail server (Postfix, Sendmail, etc.)
-
-### Building from Source
-
 ```bash
-cd /usr/src/
-git clone https://github.com/disco-v8/MilterAgent.git
-mv MilterAgent "MilterAgent-$(date +%Y%m%d)"
-cd /usr/src/"MilterAgent-$(date +%Y%m%d)"
+# Install binary
+sudo install -m 755 target/release/milter_separator /usr/local/sbin/
 
-cargo build --release
+# Install main configuration file
+sudo install -m 640 etc/MilterSeparator.conf /etc/MilterSeparator.conf
 
-/bin/cp -af ./target/release/milter_agent /usr/sbin/
-rsync -av ./logrotate.d/milter_agent /etc/logrotate.d/
-rsync -av ./systemd/milter_agent.service /usr/lib/systemd/system/
-rsync -av ./etc/ /etc/
+# Install include directory and Parameter.conf
+sudo mkdir -p /etc/MilterSeparator.d/templates
+sudo install -m 640 etc/MilterSeparator.d/Parameter.conf \
+    /etc/MilterSeparator.d/Parameter.conf
+sudo install -m 644 etc/MilterSeparator.d/templates/counter_template.cgi \
+    /etc/MilterSeparator.d/templates/counter_template.cgi
+sudo install -m 644 etc/MilterSeparator.d/templates/download_template.html \
+    /etc/MilterSeparator.d/templates/download_template.html
+
+# Install and enable systemd unit
+sudo install -m 644 systemd/milter_separator.service \
+    /etc/systemd/system/milter_separator.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now milter_separator
+
+# Install logrotate configuration
+sudo install -m 644 logrotate.d/milter_separator \
+    /etc/logrotate.d/milter_separator
 ```
+
+---
 
 ## Configuration
 
-The server uses a modular configuration system:
+Configuration is managed in two levels.
 
-### Main Configuration File
+### 1. MilterSeparator.conf (Main configuration)
 
-Create `MilterAgent.conf`:
+| Key | Description | Default |
+|-----|-------------|---------|
+| `Listen` | Listen port or address:port | `8895` |
+| `Client_timeout` | Client timeout (seconds) | `30` |
+| `Log_file` | Log output file path | stdout |
+| `Log_level` | Log verbosity (`info` / `trace` / `debug`) | `info` |
+| `RemoteIP_Target` | Target mail origin (`0`=external / `1`=internal / `2`=all) | `0` |
+| `milter_user` | Owner user for storage and DB files | `milter` |
+| `milter_group` | Owner group for storage and DB files | `apache` |
+| `include` | Path to additional configuration directory | — |
+
+### 2. MilterSeparator.d/ (Sub-configuration)
+
+#### 2.1. Parameter.conf (Feature settings)
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `password_strength` | ZIP password strength (`low` / `medium` / `high`) | `medium` |
+| `max_downloads` | Maximum download count | `5` |
+| `expire_hours` | Download expiry period (hours) | `168` (7 days) |
+| `download_auth_mode` | Authentication mode (`minimal` / `token` / `basic`) | `minimal` |
+| `basic_auth_user` | Basic authentication username | — |
+| `basic_auth_password` | Basic authentication password | — |
+| `token_auth_key` | Secret key for HMAC token generation | — |
+| `token_auth_type` | HMAC algorithm (e.g. `hmac-sha256`) | `hmac-sha256` |
+| `delete_mode` | Deletion method (`delete` / `script`) | `delete` |
+| `delete_script_path` | Script path used when `delete_mode = script` | — |
+| `storage_path` | Root directory for storing attachment files | `/var/lib/milterseparator` |
+| `base_url` | Base URL for download links | — |
+| `counter_cgi` | Filename of the counter script | `count.cgi` |
+
+#### 2.2. templates/ (Templates)
+
+The following files are copied into each UUID directory when an attachment is separated.  
+Placeholders (e.g. `{{db_type}}`) are replaced with actual configuration values at generation time.
+
+| File | Description |
+|------|-------------|
+| `counter_template.cgi` | Download counter (PHP script). Increments `download_count` in `download_tbl` on each file access. Supports SQLite / MySQL / PostgreSQL via PDO. The filename must match the `counter_cgi` setting (default: `count.cgi`). |
+| `download_template.html` | HTML template for the download page. Responsive card-style UI displaying filename, password, expiry date, and a download button. Placeholders are replaced with the actual UUID, URL, password, etc. and placed in each UUID directory. |
+
+---
+
+## Database Configuration
+
+The database type can be switched by adding the following keys to `Parameter.conf`.
+
+### SQLite3 (Default)
 
 ```
-Listen 127.0.0.1:8898
-Client_timeout 30
-Log_file /var/log/milteragent.log
-Log_level info
-
-include MilterAgent.d
+Database_Type   sqlite
+Database_Path   /var/lib/milterseparator/db.sqlite3
 ```
 
-### Filter Configuration
+The database file is created automatically on first start.  
+Write permission (660) is automatically granted to the group specified in `milter_group`  
+so that PHP / Apache can also write to it.
 
-Place filter files in the `MilterAgent.d/` directory:
-
-- `filter_bank.conf` - Banking and financial services filters
-- `filter_transport.conf` - Transportation and logistics filters
-- Additional filter files as needed
-
-If you want to start with WARN (adding only a header) instead of REJECT, please perform the following batch replacement.
+### MySQL / MariaDB
 
 ```
-chmod 700 /etc/MilterAgent.d/reject2warn.sh
-cd /etc/MilterAgent.d/
-./reject2warn.sh
+Database_Type     mysql
+Database_Host     127.0.0.1
+Database_Port     3306
+Database_User     milter
+Database_Password yourpassword
+Database_Name     milter_separator
 ```
 
-### Filter Syntax
+### PostgreSQL
 
 ```
-filter[filter_name] = 
-    "decode_from:(?i)(Pattern):AND",
-    "decode_from:!@(.*\.)?legitimate-domain\.com:REJECT"
+Database_Type     postgres
+Database_Host     127.0.0.1
+Database_Port     5432
+Database_User     milter
+Database_Password yourpassword
+Database_Name     milter_separator
 ```
 
-### Configuration Options
+> **Note**: Tables are created automatically on first start with `CREATE TABLE IF NOT EXISTS`.  
+> Integer columns (`expire_hours`, `max_downloads`, etc.) are defined as `BIGINT`  
+> to match Rust's `i64` type.
 
-- `Listen`: Server bind address and port
-  - Format: `IP:PORT` or just `PORT`
-  - Example: `127.0.0.1:8898` or `8898`
-- `Client_timeout`: Client inactivity timeout in seconds
-- `Log_file`: Path to log file (optional, defaults to stdout)
-- `Log_level`: Logging verbosity (`info`, `trace`, `debug`)
-- `Spamhaus_report`: Enable Spamhaus API reporting (`yes`/`no`, default: `no`)
-- `Spamhaus_api_token`: Spamhaus API authentication token (optional)
-- `Spamhaus_api_url`: Spamhaus API endpoint URL (optional)
-- `Spamhaus_safe_address`: IP addresses or CIDR networks to exclude from Spamhaus reporting (optional, can be specified multiple times)
-- `include`: Include additional configuration directories
+---
 
-## Usage
+## Password Strength
 
-### Starting the Server
+| Value | Character types | Length |
+|-------|----------------|--------|
+| `low` | Alphanumeric | 8+ characters |
+| `medium` | Upper, lower, digits, symbols | 12+ characters |
+| `high` | Upper, lower, digits, symbols | 16+ characters |
+
+---
+
+## Authentication Modes
+
+| Mode | Description |
+|------|-------------|
+| `minimal` | UUID existence check only. No additional authentication. |
+| `token` | HMAC token appended to URL. `token_auth_key` is required. |
+| `basic` | Basic authentication. `basic_auth_user` / `basic_auth_password` are required. |
+
+---
+
+## Signals
+
+| Signal | Behavior |
+|--------|----------|
+| `SIGHUP` | Reload configuration file and reset all client connections |
+| `SIGTERM` | Graceful shutdown |
 
 ```bash
-systemctl daemon-reload
-systemctl --no-pager status milter_agent
-
-systemctl enable milter_agent
-systemctl --no-pager status milter_agent
-
-systemctl start milter_agent
-systemctl --no-pager status milter_agent
+# Reload configuration (no service interruption)
+sudo systemctl reload milter_separator
+# or
+sudo kill -HUP $(pidof milter_separator)
 ```
 
-### Mail Server Integration
+---
 
-#### Postfix Integration
+## Postfix Integration
 
-Add to `/etc/postfix/main.cf`:
+Add the following to `/etc/postfix/main.cf`:
 
 ```
-smtpd_milters = inet:127.0.0.1:8898
+smtpd_milters   = inet:127.0.0.1:8895
 milter_default_action = accept
-milter_protocol = 6
 ```
 
-Restart Postfix:
+Then reload Postfix:
 
 ```bash
-sudo systemctl restart postfix
+sudo systemctl reload postfix
 ```
 
-#### Sendmail Integration
+---
 
-Add to `/etc/mail/sendmail.mc`:
-
-```
-INPUT_MAIL_FILTER(`milteragent', `S=inet:8898@127.0.0.1')
-```
-
-### Signal Handling
-
-- **SIGHUP**: Reload configuration files
-- **SIGTERM**: Graceful shutdown
-- **Ctrl+C** (Windows): Graceful shutdown
+## Checking Logs
 
 ```bash
-# Reload configuration
-systemctl reload milter_agent
-systemctl --no-pager status milter_agent
+# journald
+sudo journalctl -u milter_separator -f
 
-# Graceful shutdown
-systemctl stop milter_agent
-systemctl --no-pager status milter_agent
+# File log (when Log_file is configured)
+tail -f /var/log/milterseparator.log
 ```
 
-## Logging
+---
 
-The server supports configurable log levels:
-
-- `info` (0): Basic operational messages
-- `trace` (2): Detailed tracing information  
-- `debug` (8): Comprehensive debugging output
-
-Logs include JST timestamps and are output to either a file or stdout based on configuration.
-
-## Filter Examples
-
-### Banking Filter
+## Directory Structure
 
 ```
-filter[phish_mufg] = 
-    "decode_from:(?i)(三菱UFJ|MUFG):AND",
-    "decode_from:!@(.*\.)?mufg\.jp:REJECT"
+MilterSeparator/
+├── src/
+│   ├── main.rs          # Server startup and signal handling
+│   ├── client.rs        # Milter client connection handling
+│   ├── milter.rs        # Milter command decode and response
+│   ├── milter_command.rs# Milter protocol constant definitions
+│   ├── parse.rs         # Email and attachment parsing
+│   ├── zipper.rs        # Attachment storage and ZIP compression
+│   ├── download.rs      # Download URL generation
+│   ├── db.rs            # DB initialization and record insertion
+│   ├── init.rs          # Configuration file loading
+│   └── logging.rs       # JST timestamp logging
+├── etc/
+│   ├── MilterSeparator.conf          # Main configuration
+│   └── MilterSeparator.d/
+│       ├── Parameter.conf            # Feature configuration
+│       ├── Parameter.conf.sample     # Configuration sample
+│       └── templates/
+│           ├── counter_template.cgi  # Counter CGI template
+│           └── download_template.html# Download page template
+├── systemd/
+│   └── milter_separator.service      # systemd unit file
+├── logrotate.d/
+│   └── milter_separator              # logrotate configuration
+└── Cargo.toml
 ```
 
-### Transportation Filter
-
-```
-filter[phish_jreast] = 
-    "decode_from:(?i)(JR東日本|East Japan Railway):AND",
-    "decode_from:!(@(.*\.)?jreast\.co\.jp|@(.*\.)?jre-vts\.com):REJECT"
-```
-
-### Advanced Negative Lookahead Filter
-
-```
-filter[phish_monex_html] = 
-    "body:(?i)monex.*(?!.*\.?(monex\.co\.jp|monex\.com|on-compass\.com)\b):REJECT"
-```
-
-This filter detects emails containing "monex" but not from legitimate Monex domains, preventing phishing attempts that impersonate the financial service while allowing legitimate communications.
-
-### Caveat: Negative Lookahead Recursion Depth in `fancy-regex`
-
-When using `fancy-regex` for semantic filtering, be aware that negative lookaheads `(?!...)` containing more than 3–4 `|` branches may exceed internal recursion depth.
-
-This can result in partial matches or incorrect evaluation, especially when filtering URLs with multiple domain exclusions.
-
-**Recommended workaround:**
-- Split complex lookaheads into multiple filter rules
-- Avoid deeply nested alternations inside `(?!...)`
-- Use simpler patterns with fewer branches per lookahead
-
-Example:
-
-```dsl
-# Avoid this (may fail):
-decode_html:https?://(?!.*\.(a\.com|b\.com|c\.com|d\.com|e\.com)\b).+:REJECT
-
-# Prefer this (stable evaluation):
-decode_html:https?://(?!.*\.(a\.com|b\.com|c\.com)\b).+:AND
-decode_html:https?://(?!.*\.(d\.com|e\.com)\b).+:REJECT
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License — see [LICENSE](LICENSE) for details.
 
-**Notice:**
-- This project uses third-party crates, some of which are licensed under Apache-2.0.
-- In particular, the [mail-parser](https://crates.io/crates/mail-parser) crate is licensed under Apache-2.0. Please review its license if you redistribute or modify this software.
+---
 
-## Security Notice
+## Contributing
 
-This software is designed to help protect against phishing emails but should be used as part of a comprehensive email security strategy. Regular updates to filter rules are recommended to address new phishing campaigns.
-
-## Support
-
-For issues, questions, or contributions, please use the GitHub issue tracker.
-
-### Multi-part Email with Attachments
-
-```
-[2025/07/23 15:31:20] このメールはマルチパートです
-[2025/07/23 15:31:20] [mail-parser] テキストパート数: 1
-[2025/07/23 15:31:20] [mail-parser] 非テキストパート数: 1
-[2025/07/23 15:31:20] 本文(1): Email body content
-[2025/07/23 15:31:20] 非テキストパート(1): content_type="application/pdf", encoding=Base64, filename=document.pdf, size=1024 bytes
-```
-
-## Architecture
-
-### Module Structure
-
-- **main.rs**: Server startup, configuration management, signal handling
-- **client.rs**: Per-client Milter protocol handling
-- **milter.rs**: Milter command decoding and response generation
-- **milter_command.rs**: Milter protocol command definitions
-- **parse.rs**: MIME email parsing and output formatting
-- **init.rs**: Configuration file management
-- **logging.rs**: JST timestamp logging macros
-
-### Milter Protocol Flow
-
-1. **OPTNEG**: Protocol negotiation
-2. **CONNECT**: Client connection information
-3. **HELO/EHLO**: SMTP greeting
-4. **DATA**: Macro information
-5. **HEADER**: Email headers (multiple)
-6. **BODY**: Email body content (multiple chunks)
-7. **BODYEOB**: End of body - triggers email parsing and output
-
-## Dependencies
-
-- [tokio](https://tokio.rs/): Asynchronous runtime
-- [mail-parser](https://crates.io/crates/mail-parser): MIME email parsing
-- [fancy-regex](https://crates.io/crates/fancy-regex): Advanced regex engine with lookahead/lookbehind support
-- [chrono](https://crates.io/crates/chrono): Date and time handling
-- [chrono-tz](https://crates.io/crates/chrono-tz): Timezone support
-- [reqwest](https://crates.io/crates/reqwest): HTTP client for API integration
-- [serde](https://crates.io/crates/serde): Serialization framework
-
-## Development
-
-### Running in Development Mode
-
-```bash
-cargo run
-```
-
-### Testing with Sample Email
-
-You can test the server by sending emails through a configured Postfix instance or using telnet to send raw SMTP commands.
-
-### Debug Features
-
-- NUL byte visualization: `\0` bytes are displayed as `<NUL>`
-- Hex dump output for unknown commands
-- Detailed protocol command logging
-- Error handling with descriptive messages
-
-## Changelog
-
-### v0.3.3（2025-10-02）Loopback Address Connection Optimization
-- Optimized loopback address connection handling to avoid unnecessary processing
-- Loopback connections (127.0.0.1, ::1) are now silently dropped without logging or spawning client threads
-- Enhanced invisible character filtering with comprehensive Unicode coverage
-- Removed language-specific restrictions for universal protection against invisible character attacks
-- Consolidated filtering logic between parse.rs and filter.rs for consistency
-- Added `RemoteIP_Target` configuration option for granular remote IP filtering control
-
-### v0.3.2（2025-09-18）Japanese text sanitization and From header spoofing countermeasures.
-- Removal of invisible and bidirectional control characters in Japanese text, and mitigation of address spoofing via From name manipulation.
-
-### v0.3.1（2025-08-20）Mitigation of recursion depth limitations
-- Modified processing to avoid recursion depth issues in fancy-regex.
-
-## v0.3.0 - Semantic Filtering Reinforced (2025-08-17)
-- Added Unicode normalization (NFKC) and invisible character stripping to Subject/From headers
-- Improved spoofing resistance against obfuscated Unicode and bidirectional control characters
-- Enhanced semantic matching accuracy and operational reproducibility
-
-### v0.2.1 (2025-08-13)
-- Refactored filter rule parsing logic for more robust and flexible configuration
-- Improved handling of colons (:) in filter rules, especially for URLs—no escaping required
-
-### v0.2.0 (2025-08-08)
-- **Major Update: Rust 2024 Edition Support**
-  - Upgraded from Rust 2021 to Rust 2024 edition
-  - Improved performance and latest language features
-  - Enhanced standard library integration
-
-- **Advanced Regex Engine Upgrade**
-  - Migrated from standard `regex` to `fancy-regex` 0.16
-  - Added support for negative lookahead (`(?!...)`) and positive lookahead (`(?=...)`)
-  - Added support for negative lookbehind (`(?<!...)`) and positive lookbehind (`(?<=...)`)
-  - Enables sophisticated phishing detection patterns
-
-- **Spamhaus API Integration**
-  - Automatic detection and reporting of phishing email source IPs
-  - Configurable Spamhaus API authentication and endpoints
-  - Threat intelligence sharing for spam-flagged emails
-  - Added `Spamhaus_report`, `Spamhaus_api_token`, and `Spamhaus_api_url` configuration options
-  - Added `Spamhaus_safe_address` for IP whitelist configuration
-  - Supports CIDR notation for network range exclusions
-
-- **Filter Engine Improvements**
-  - Fixed fancy-regex recursion depth issue with complex negative lookaheads
-  - Split complex OR patterns to avoid recursion limits (>3-4 branches)
-  - Improved semantic accuracy for w3.org and domain exclusion filters
-  - Enhanced filter reliability and pattern matching stability
-
-- **Dependency Optimization**
-  - Removed `lazy_static` dependency (unused)
-  - Replaced `once_cell` with standard library `std::sync::OnceLock`
-  - Reduced external dependencies and improved compilation time
-  - Updated to latest compatible versions of all dependencies
-
-- **Code Quality Improvements**
-  - Comprehensive code documentation and comments
-  - Improved error handling in regex matching
-  - Enhanced code readability and maintainability
-  - Applied consistent formatting with `cargo fmt`
-  - Resolved all `cargo clippy` warnings
-
-- **Configuration System Enhancements**
-  - Better error messages for invalid filter configurations
-  - Improved regex compilation error reporting
-  - Enhanced configuration file parsing robustness
-
-### v0.1.0
-- Initial release
-- Basic Milter protocol implementation
-- MIME email parsing and output
-- Configuration file support
-- Signal handling
-- JST timestamp logging
+Bug reports and feature requests are welcome via Issues.  
+Code contributions are welcome via Pull Requests.  
+Please see [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines.

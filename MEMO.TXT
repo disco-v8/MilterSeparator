@@ -1,0 +1,81 @@
+目的
+- Postfix で“特定の宛先”に届くメールのみを Milter（MilterSeparator）で処理するための簡潔メモ。
+
+前提
+- Postfix の `check_recipient_access` を使い、該当宛先を検出したら `FILTER smtp:[127.0.0.1]:10026` へ転送する。
+- `master.cf` 側で 127.0.0.1:10026 の smtpd インスタンスを用意し、そのインスタンスで `smtpd_milters` を有効にして `MilterSeparator` を適用する。
+
+手順（要 root または postfix 管理者権限）
+
+0) テスト用アカウントの作成
+
+alma9.fwnet.jpで
+
+emacs /etc/postfix/virtual
+--------------------------------
+test001@js1fvg.mydns.jp kabu_fwd2
+--------------------------------
+
+を追記して、
+
+/usr/sbin/postmap /etc/postfix/virtual
+systemctl restart postfix.service
+
+で、test001@js1fvg.mydns.jpにメールを送信して受け付けられることを確認。
+
+1) 受信フィルタマップを作成する
+
+emacs /etc/postfix/recipient_filter
+--------------------------------
+test001@js1fvg.mydns.jp FILTER smtp:[127.0.0.1]:10026
+--------------------------------
+※SMTPで渡すことになるので、特定のアドレスについてのみsmtpd:10026での別処理とする
+
+postmap /etc/postfix/recipient_filter
+ls -la /etc/postfix/recipient_filter*
+systemctl restart postfix.service
+
+2) main.cf を編集して check_recipient_access を組み込む
+
+emacs /etc/postfix/main.cf
+--------------------------------
+smtpd_recipient_restrictions =
+                             permit_mynetworks
+                             reject_non_fqdn_recipient
+                             reject_unauth_pipelining
+                             permit_sasl_authenticated
+                             reject_unauth_destination
+                             check_recipient_access hash:/etc/postfix/recipient_filter
+--------------------------------
+
+3) master.cf に 127.0.0.1:10026 用の smtpd インスタンスを追加
+
+emacs /etc/postfix/master.cf
+--------------------------------
+#
+# MilterSeparator TEST
+127.0.0.1:10026 inet n - n - - smtpd
+  -o content_filter=
+  -o receive_override_options=no_header_body_checks
+  -o smtpd_milters=inet:127.0.0.1:8895
+  -o milter_default_action=accept
+--------------------------------
+※- smtpd_milters は MilterSeparator の待ち受けアドレス（例: 127.0.0.1:8895）に合わせる。
+※- content_filter= を空にして二重フィルタを避ける。
+
+systemctl restart postfix.service
+
+4) MilterSeparator を起動
+
+systemctl restart milter_separator
+
+5) 動作確認
+  - 対象アドレス宛にテストメールを送信し、MilterSeparator のログに処理ログ（添付保存など）が出ることを確認する。
+  - 非対象アドレス宛は通常どおり配信され、MilterSeparator に処理が渡らないことを確認する。
+
+トラブルシュートのヒント
+- ループする場合: FILTER 先の smtpd が同じ recipient_filter を参照しているとループする。FILTER 先のインスタンスでは該当チェックを無効にするか、receive_override_options や別ポートの設定でループを防ぐ。
+- Milter が反応しない場合: milter_default_action=accept を設定しておくと配信阻害を避けられるが、ログで原因を確認すること。
+
+終わり
+

@@ -1,31 +1,32 @@
 // =========================
-// init.rs - MilterAgent 設定管理モジュール
+// init.rs - MilterSeparator 設定管理モジュール
 // =========================
 //
 // 【使用クレート】
-// - fancy-regex: 高機能正規表現エンジン（負先読み・後読み対応、メール内容パターンマッチング用）
 // - std::fs: ファイルシステム操作（設定ファイルの読み書き）
 // - std::path: ファイルパス処理（設定ファイルのパス操作）
 // - std::io::BufRead: バッファ付きファイル読み込み（大容量設定ファイル対応）
 //
 // 【主要機能】
-// 1. メイン設定ファイル(MilterAgent.conf)の解析
+// 1. メイン設定ファイル(MilterSeparator.conf)の解析
 // 2. includeディレクトリ内の追加設定ファイル(.conf)の再帰読み込み
 // 3. サーバー設定（Listen、タイムアウト、ログレベル等）の構造化
-// 4. フィルタールール設定の解析とValidation
-// 5. Spamhaus API連携設定の管理
 
-use fancy_regex::Regex;
+/// ZIPパスワード強度設定
+#[derive(Debug, Clone, Default)]
+pub enum PasswordStrength {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
 
-// フィルタールール構造体
-// メールの内容や送信者情報に対する判定条件を定義
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct FilterRule {
-    pub key: String,    // フィルター対象フィールド（decode_from, decode_subject, body等）
-    pub regex: Regex,   // マッチング用正規表現パターン
-    pub negate: bool,   // 否定条件フラグ（!で指定時はtrue）
-    pub action: String, // マッチ時の実行アクション（REJECT/DROP/WARN/ACCEPT）
+/// 削除モード
+#[derive(Debug, Clone, Default)]
+pub enum DeleteMode {
+    #[default]
+    Delete,
+    Script,
 }
 
 // メイン設定構造体
@@ -33,16 +34,38 @@ pub struct FilterRule {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Config {
-    pub address: String,          // Milterサーバー待受アドレス（例: "[::]:8898"）
+    pub address: String,          // Milterサーバー待受アドレス（例: "[::]:8895"）
     pub client_timeout: u64,      // SMTPクライアント無応答タイムアウト時間（秒）
     pub log_file: Option<String>, // ログ出力先ファイルパス（None時は標準出力）
     pub log_level: u8,            // ログ詳細度（0=info, 2=trace, 8=debug）
-    pub filters: Vec<(String, Vec<FilterRule>)>, // フィルター定義リスト（名前とルールセット）
     pub remote_ip_target: u8,     // RemoteIP_Target: 0=外部のみ,1=内部のみ,2=全て
-    pub spamhaus_report: bool,    // Spamhaus情報をログ出力するかのフラグ
-    pub spamhaus_api_token: Option<String>, // Spamhaus API認証用トークン
-    pub spamhaus_api_url: Option<String>, // Spamhaus API接続先エンドポイント
-    pub spamhaus_safe_addresses: Vec<String>, // Spamhaus通知除外IPアドレス/ネットワーク
+
+    // MilterSeparator 用設定
+    pub password_strength: PasswordStrength,
+    pub max_downloads: u32,
+    pub expire_hours: u64,
+    pub download_auth_mode: String,
+    pub basic_auth_user: Option<String>,
+    pub basic_auth_password: Option<String>,
+    pub token_auth_key: Option<String>,
+    pub token_auth_type: Option<String>,
+    pub delete_mode: DeleteMode,
+    pub delete_script_path: Option<String>,
+    pub storage_path: String,
+    pub base_url: String,
+    // Database settings
+    pub database_type: String, // sqlite / mysql / postgres
+    pub database_path: Option<String>, // for sqlite
+    pub database_host: Option<String>,
+    pub database_port: Option<u16>,
+    pub database_user: Option<String>,
+    pub database_password: Option<String>,
+    pub database_name: Option<String>,
+    // CGI filename for counter (default: count.cgi)
+    pub counter_cgi: String,
+    // Service user/group for ownership when creating storage/db files
+    pub milter_user: String,
+    pub milter_group: String,
 }
 
 // ログレベル定数定義
@@ -64,26 +87,45 @@ pub const LOG_DEBUG: u8 = 8; // デバッグ詳細情報（変数値、内部処
 // 1. 設定ファイルをテキストとして読み込み
 // 2. include ディレクトリ内の追加設定ファイルを再帰的に処理
 // 3. 各設定項目を対応する構造体フィールドにマッピング
-// 4. フィルタールールの正規表現をコンパイル・検証
 //
 // # デフォルト値
-// * Listen: "[::]:8898"（IPv6全アドレス、ポート8898）
+// * Listen: "[::]:8895"（IPv6全アドレス、ポート8895）
 // * Client_timeout: 30秒
 // * Log_level: 0 (info レベル)
 pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
     // 内部用設定値一時保持構造体
     // ファイル解析中に設定値を蓄積し、最終的にConfig構造体に変換するためのワーク領域
     struct ConfigValues {
-        address: Option<String>,                 // サーバー待受アドレス
-        client_timeout: u64,                     // 接続タイムアウト時間
-        log_file: Option<String>,                // ログファイル出力先
-        log_level: u8,                           // ログ詳細度設定
-        filters: Vec<(String, Vec<FilterRule>)>, // フィルタールール群
-        remote_ip_target: u8,                    // RemoteIP_Target: 0=外部のみ,1=内部のみ,2=全て
-        spamhaus_report: bool,                   // Spamhaus連携フラグ
-        spamhaus_api_token: Option<String>,      // API認証トークン
-        spamhaus_api_url: Option<String>,        // API接続先URL
-        spamhaus_safe_addresses: Vec<String>,    // Spamhaus通知除外IPアドレス/ネットワーク
+        address: Option<String>,  // サーバー待受アドレス
+        client_timeout: u64,      // 接続タイムアウト時間
+        log_file: Option<String>, // ログファイル出力先
+        log_level: u8,            // ログ詳細度設定
+        remote_ip_target: u8,     // RemoteIP_Target: 0=外部のみ,1=内部のみ,2=全て
+
+        // MilterSeparator specific values (raw/string forms)
+        password_strength: String,
+        max_downloads: u32,
+        expire_hours: u64,
+        download_auth_mode: String,
+        basic_auth_user: Option<String>,
+        basic_auth_password: Option<String>,
+        token_auth_key: Option<String>,
+        token_auth_type: String,
+        delete_mode: String,
+        delete_script_path: Option<String>,
+        storage_path: String,
+        base_url: String,
+        // Database raw settings
+        database_type: String,
+        database_path: Option<String>,
+        database_host: Option<String>,
+        database_port: Option<String>,
+        database_user: Option<String>,
+        database_password: Option<String>,
+        database_name: Option<String>,
+        counter_cgi: String,
+        milter_user: String,
+        milter_group: String,
     }
 
     // 設定テキスト行単位解析関数
@@ -118,12 +160,29 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
                 || line.starts_with("Log_file")
                 || line.starts_with("Log_level")
                 || line.starts_with("RemoteIP_Target")
-                || line.starts_with("Spamhaus_report")
-                || line.starts_with("Spamhaus_api_token")
-                || line.starts_with("Spamhaus_api_url")
-                || line.starts_with("Spamhaus_safe_address")
                 || line.starts_with("include")
-                || line.starts_with("filter[")
+                || line.starts_with("password_strength")
+                || line.starts_with("download_auth_mode")
+                || line.starts_with("basic_auth_user")
+                || line.starts_with("basic_auth_password")
+                || line.starts_with("token_auth_key")
+                || line.starts_with("token_auth_type")
+                || line.starts_with("max_downloads")
+                || line.starts_with("expire_hours")
+                || line.starts_with("delete_mode")
+                || line.starts_with("delete_script_path")
+                || line.starts_with("storage_path")
+                || line.starts_with("base_url")
+                || line.starts_with("Database_Type")
+                || line.starts_with("Database_Path")
+                || line.starts_with("Database_Host")
+                || line.starts_with("Database_Port")
+                || line.starts_with("Database_User")
+                || line.starts_with("Database_Password")
+                || line.starts_with("Database_Name")
+                || line.starts_with("counter_cgi")
+                || line.starts_with("milter_user")
+                || line.starts_with("milter_group")
         }
 
         // 複数行にわたる設定値を収集する統一関数
@@ -151,7 +210,7 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
 
                 // 継続行として連結
                 if join_with_comma {
-                    // カンマ区切りでの連結（Spamhaus_safe_address等）
+                    // カンマ区切りでの連結（include ディレクトリ等）
                     if !current_value.trim().ends_with(',') && !peek_trim.starts_with(',') {
                         current_value.push(',');
                     }
@@ -232,16 +291,6 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
                     };
                 }
             }
-            // Spamhaus_report設定 - Spamhaus情報のログ出力制御フラグ
-            else if line.starts_with("Spamhaus_report") {
-                if let Some((_, value)) = split_key_value(line) {
-                    let full_value = collect_multiline_value(&mut lines, value, false);
-                    let report_str = full_value.trim().to_ascii_lowercase();
-                    if report_str == "yes" || report_str == "true" || report_str == "1" {
-                        values.spamhaus_report = true;
-                    }
-                }
-            }
             // RemoteIP_Target設定 - 接続元IPに基づく対象範囲制御
             else if line.starts_with("RemoteIP_Target") {
                 if let Some((_, val_str)) = split_key_value(line) {
@@ -259,146 +308,216 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
                     }
                 }
             }
-            // Spamhaus_api_token設定 - Spamhaus API認証用トークン文字列
-            else if line.starts_with("Spamhaus_api_token") {
+            // password_strength設定 - low|medium|high
+            else if line.starts_with("password_strength") {
                 if let Some((_, value)) = split_key_value(line) {
                     let full_value = collect_multiline_value(&mut lines, value, false);
-                    let token = full_value.trim();
-                    if !token.is_empty() {
-                        values.spamhaus_api_token = Some(token.to_string());
+                    let v = full_value.trim().to_ascii_lowercase();
+                    if v == "low" || v == "medium" || v == "high" {
+                        values.password_strength = v;
                     }
                 }
             }
-            // Spamhaus_api_url設定 - Spamhaus API接続先エンドポイントURL（複数行対応）
-            else if line.starts_with("Spamhaus_api_url") {
+            // max_downloads設定 - 整数
+            else if line.starts_with("max_downloads") {
                 if let Some((_, value)) = split_key_value(line) {
                     let full_value = collect_multiline_value(&mut lines, value, false);
-                    let url = full_value.trim();
-                    if !url.is_empty() {
-                        values.spamhaus_api_url = Some(url.to_string());
+                    if let Ok(n) = full_value.trim().parse::<u32>() {
+                        values.max_downloads = n;
                     }
                 }
             }
-            // Spamhaus_safe_address設定 - Spamhaus通知除外IPアドレス/ネットワークリスト（カンマ区切り、複数行対応）
-            else if line.starts_with("Spamhaus_safe_address") {
+            // expire_hours設定 - 整数
+            else if line.starts_with("expire_hours") {
                 if let Some((_, value)) = split_key_value(line) {
-                    let full_value = collect_multiline_value(&mut lines, value, true);
-
-                    // カンマ区切りで分割してベクターに追加
-                    for addr in full_value.split(',') {
-                        let addr = addr.trim();
-                        if !addr.is_empty() {
-                            values.spamhaus_safe_addresses.push(addr.to_string());
-                        }
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    if let Ok(n) = full_value.trim().parse::<u64>() {
+                        values.expire_hours = n;
                     }
                 }
             }
-            // filter設定 - メールコンテンツ判定ルールの定義（最優先で処理）
-            // 書式: filter[フィルター名] = キー:正規表現:論理演算子:アクション
-            else if let Some(rest) = line.strip_prefix("filter[") {
-                crate::printdaytimeln!(LOG_DEBUG, "[init] processing filter line: {}", line);
-                if let Some(end_idx) = rest.find(']') {
-                    let name = &rest[..end_idx]; // フィルター識別名を取得
-                    let eq_idx = rest.find('='); // 等号の位置を検索
-
-                    // まず1行目の=以降のルール定義を取得
-                    let initial_rule = if let Some(eq_idx) = eq_idx {
-                        rest[eq_idx + 1..].trim()
-                    } else {
-                        ""
-                    };
-
-                    // 複数行にわたるルール定義を統一的に収集
-                    let rule_str = collect_multiline_value(&mut lines, initial_rule, false);
-                    crate::printdaytimeln!(
-                        LOG_DEBUG,
-                        "[init] filter[{}] rule_str: '{}'",
-                        name,
-                        rule_str
-                    );
-
-                    // カンマ区切りで複数の判定条件を分割
-                    let rule_list: Vec<&str> = rule_str
-                        .split(',')
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    crate::printdaytimeln!(
-                        LOG_DEBUG,
-                        "[init] filter[{}] rule_list: {:?}",
-                        name,
-                        rule_list
-                    );
-                    let mut rules = Vec::new();
-
-                    // 各判定条件を個別にパース
-                    for rule in rule_list {
-                        // ルール定義文字列を「:」(ただしエスケープ除外)で分割する正規表現を生成
-                        let re = Regex::new(r"(?<!\\):").unwrap();
-                        // 分割結果（parts）は [キー, パターン, アクション] の3要素になる想定
-                        let parts: Vec<&str> = re.split(rule).filter_map(Result::ok).collect();
-                        // デバッグ出力: フィルター定義全文と各パーツ
-                        crate::printdaytimeln!(
-                            LOG_DEBUG,
-                            "[init] filter name='{}' rule raw='{}' parts0='{}' parts1='{}' parts2='{}'",
-                            name,
-                            rule,
-                            parts.first().unwrap_or(&""),
-                            parts.get(1).unwrap_or(&""),
-                            parts.get(2).unwrap_or(&"")
-                        );
-
-                        // 3要素形式: 「キー:パターン:アクション」のみ対応
-                        if parts.len() == 3 {
-                            // parts[0]: フィルター対象フィールド名（例: body, subject, from等）
-                            let key = parts[0].trim().trim_matches('"');
-                            // parts[1]: パターン（先頭が!なら否定条件）
-                            let (negate, pattern_raw) = if parts[1].starts_with('!') {
-                                // 先頭!なら否定条件フラグをtrue、!を除去したパターン文字列
-                                (true, &parts[1][1..])
-                            } else {
-                                // 否定条件でなければ通常のパターン
-                                (false, parts[1])
-                            };
-                            // パターン文字列の前後の"を除去
-                            let pattern = pattern_raw.trim().trim_matches('"');
-                            // 正規表現パターンをコンパイル（失敗時は無視）
-                            if let Ok(regex) = Regex::new(pattern) {
-                                // parts[2]: 実行アクション（REJECT/DROP/WARN/ACCEPT等）
-                                let action = parts[2].trim().trim_matches('"');
-                                // フィルタールール構造体に追加
-                                rules.push(FilterRule {
-                                    key: key.to_string(), // フィルター対象フィールド名（例: body, subject, from等）
-                                    regex,                // マッチング用正規表現パターン
-                                    negate,               // 否定条件フラグ（!で指定時はtrue）
-                                    action: action.to_string(), // マッチ時の実行アクション（REJECT/DROP/WARN/ACCEPT/AND/OR等）
-                                });
-                            }
-                        }
-                    }
-                    // フィルタールールの有効性検証
-                    // 最終アクションが規定の値（REJECT/DROP/WARN/ACCEPT）かチェック
-                    let valid_actions = ["REJECT", "DROP", "WARN", "ACCEPT"];
-                    let is_valid = rules
-                        .last()
-                        .map(|r| {
-                            let act = r.action.to_ascii_uppercase();
-                            valid_actions.contains(&act.as_str())
-                        })
-                        .unwrap_or(false);
-
-                    // 有効なフィルターのみシステムに登録
-                    if is_valid {
-                        values.filters.push((name.to_string(), rules));
-                    } else {
-                        crate::printdaytimeln!(
-                            LOG_INFO,
-                            "[init] filter[{}] の最終アクションがREJECT/DROP/WARN/ACCEPT以外、または未指定のため無効化",
-                            name
-                        );
+            // delete_mode設定 - delete|script
+            else if line.starts_with("delete_mode") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim().to_ascii_lowercase();
+                    if v == "delete" || v == "script" {
+                        values.delete_mode = v;
                     }
                 }
-                continue;
+            }
+            // delete_script_path設定
+            else if line.starts_with("delete_script_path") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let p = full_value.trim();
+                    if !p.is_empty() {
+                        values.delete_script_path = Some(p.to_string());
+                    }
+                }
+            }
+            // storage_path設定
+            else if line.starts_with("storage_path") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let p = full_value.trim();
+                    if !p.is_empty() {
+                        values.storage_path = p.to_string();
+                    }
+                }
+            }
+            // milter_user設定
+            else if line.starts_with("milter_user") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if !v.is_empty() {
+                        values.milter_user = v.to_string();
+                    }
+                }
+            }
+            // milter_group設定
+            else if line.starts_with("milter_group") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if !v.is_empty() {
+                        values.milter_group = v.to_string();
+                    }
+                }
+            }
+            // base_url設定
+            else if line.starts_with("base_url") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let u = full_value.trim();
+                    if !u.is_empty() {
+                        values.base_url = u.to_string();
+                    }
+                }
+            }
+            // download_auth_mode設定
+            else if line.starts_with("download_auth_mode") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if !v.is_empty() {
+                        values.download_auth_mode = v.to_string();
+                    }
+                }
+            }
+            // Database settings
+            else if line.starts_with("Database_Type") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim().to_ascii_lowercase();
+                    if !v.is_empty() {
+                        values.database_type = v;
+                    }
+                }
+            }
+            else if line.starts_with("Database_Path") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if !v.is_empty() {
+                        values.database_path = Some(v.to_string());
+                    }
+                }
+            }
+            else if line.starts_with("Database_Host") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if !v.is_empty() {
+                        values.database_host = Some(v.to_string());
+                    }
+                }
+            }
+            else if line.starts_with("Database_Port") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if let Ok(n) = v.parse::<u16>() {
+                        values.database_port = Some(n.to_string());
+                    }
+                }
+            }
+            else if line.starts_with("Database_User") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if !v.is_empty() {
+                        values.database_user = Some(v.to_string());
+                    }
+                }
+            }
+            else if line.starts_with("Database_Password") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if !v.is_empty() {
+                        values.database_password = Some(v.to_string());
+                    }
+                }
+            }
+            else if line.starts_with("Database_Name") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if !v.is_empty() {
+                        values.database_name = Some(v.to_string());
+                    }
+                }
+            }
+            else if line.starts_with("counter_cgi") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if !v.is_empty() {
+                        values.counter_cgi = v.to_string();
+                    }
+                }
+            }
+            // basic_auth_user
+            else if line.starts_with("basic_auth_user") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if !v.is_empty() {
+                        values.basic_auth_user = Some(v.to_string());
+                    }
+                }
+            }
+            // basic_auth_password
+            else if line.starts_with("basic_auth_password") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if !v.is_empty() {
+                        values.basic_auth_password = Some(v.to_string());
+                    }
+                }
+            }
+            // token_auth_key
+            else if line.starts_with("token_auth_key") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if !v.is_empty() {
+                        values.token_auth_key = Some(v.to_string());
+                    }
+                }
+            }
+            // token_auth_type
+            else if line.starts_with("token_auth_type") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim();
+                    if !v.is_empty() {
+                        values.token_auth_type = v.to_string();
+                    }
+                }
             }
             // include ディレクトリの再帰読み込み処理
             else if line.starts_with("include") {
@@ -439,6 +558,7 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
                                                 "[init] file content length: {} bytes",
                                                 sub_text.len()
                                             );
+                                            // 再帰的にサブ設定を解析（新しい設定キーをマージ）
                                             parse_config_text(&sub_text, values);
                                         } else {
                                             crate::printdaytimeln!(
@@ -479,49 +599,77 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
         client_timeout: 30u64, // デフォルト30秒タイムアウト
         log_file: None,        // デフォルトは標準出力
         log_level: 0,          // デフォルトはinfoレベル
-        filters: Vec::new(),
-        remote_ip_target: 0,    // デフォルトは0（外部のみ）
-        spamhaus_report: false, // デフォルトはSpamhaus情報非出力
-        spamhaus_api_token: None,
-        spamhaus_api_url: None,
-        spamhaus_safe_addresses: Vec::new(), // デフォルトは空のホワイトリスト
+        remote_ip_target: 0,   // デフォルトは0（外部のみ）
+        password_strength: "medium".to_string(),
+        max_downloads: 3,
+        expire_hours: 24 * 7,
+        download_auth_mode: "minimal".to_string(),
+        basic_auth_user: None,
+        basic_auth_password: None,
+        token_auth_key: None,
+        token_auth_type: "hmac-sha256".to_string(),
+        delete_mode: "delete".to_string(),
+        delete_script_path: None,
+        storage_path: "/var/lib/milter_separator/files".to_string(),
+        base_url: "http://localhost".to_string(),
+        database_type: "sqlite".to_string(),
+        database_path: Some("/var/lib/milterseparator/db.sqlite3".to_string()),
+        database_host: None,
+        database_port: None,
+        database_user: None,
+        database_password: None,
+        database_name: None,
+        counter_cgi: "count.cgi".to_string(),
+        milter_user: "milter".to_string(),
+        milter_group: "apache".to_string(),
     };
 
     // 設定ファイル内容の解析実行
     parse_config_text(&text, &mut values);
 
-    // フィルター内容をデバッグ出力
-    crate::printdaytimeln!(
-        LOG_INFO,
-        "[init] filters loaded: {}個",
-        values.filters.len()
-    );
-    for (name, rules) in &values.filters {
-        crate::printdaytimeln!(LOG_DEBUG, "[init] filter[{}] 条件数={}:", name, rules.len());
-        for (i, rule) in rules.iter().enumerate() {
-            crate::printdaytimeln!(
-                LOG_DEBUG,
-                "  [{}] key='{}' pattern='{}' negate={} action='{}'",
-                i,
-                rule.key,
-                rule.regex.as_str(),
-                rule.negate,
-                rule.action
-            );
-        }
-    }
+    // 設定の確認ログ
+    crate::printdaytimeln!(LOG_INFO, "[init] configuration loaded");
 
     // 最終的なConfig構造体を生成して返却
+    // password_strength を列挙型に変換
+    let password_strength = match values.password_strength.as_str() {
+        "low" => PasswordStrength::Low,
+        "high" => PasswordStrength::High,
+        _ => PasswordStrength::Medium,
+    };
+    let delete_mode = match values.delete_mode.as_str() {
+        "script" => DeleteMode::Script,
+        _ => DeleteMode::Delete,
+    };
+
     Config {
-        address: values.address.unwrap_or_else(|| "[::]:8898".to_string()),
+        address: values.address.unwrap_or_else(|| "[::]:8895".to_string()),
         client_timeout: values.client_timeout,
         log_file: values.log_file,
         log_level: values.log_level,
-        filters: values.filters,
-        spamhaus_report: values.spamhaus_report,
-        spamhaus_api_token: values.spamhaus_api_token,
-        spamhaus_api_url: values.spamhaus_api_url,
-        spamhaus_safe_addresses: values.spamhaus_safe_addresses,
         remote_ip_target: values.remote_ip_target,
+
+        password_strength,
+        max_downloads: values.max_downloads,
+        expire_hours: values.expire_hours,
+        download_auth_mode: values.download_auth_mode,
+        basic_auth_user: values.basic_auth_user,
+        basic_auth_password: values.basic_auth_password,
+        token_auth_key: values.token_auth_key,
+        token_auth_type: Some(values.token_auth_type),
+        delete_mode,
+        delete_script_path: values.delete_script_path,
+        storage_path: values.storage_path,
+        base_url: values.base_url,
+        database_type: values.database_type,
+        database_path: values.database_path,
+        database_host: values.database_host,
+        database_port: values.database_port.and_then(|s| s.parse::<u16>().ok()),
+        database_user: values.database_user,
+        database_password: values.database_password,
+        database_name: values.database_name,
+        counter_cgi: values.counter_cgi,
+        milter_user: values.milter_user,
+        milter_group: values.milter_group,
     }
 }

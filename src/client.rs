@@ -1,13 +1,12 @@
 // =========================
 // client.rs
-// MilterAgent クライアント接続処理モジュール
+// MilterSeparator クライアント接続処理モジュール
 //
 // 【このファイルで使う主なクレート】
 // - tokio: 非同期TCP通信・I/O・ブロードキャスト・タイムアウト等の非同期処理全般（net::TcpStream, io::AsyncReadExt, sync::broadcast）
 // - std: 標準ライブラリ（アドレス、コレクション、時間、文字列操作など）
 // - super::milter_command: Milterプロトコルのコマンド種別定義・判定用（MilterCommand enum, as_str等）
 // - super::milter: Milterコマンドごとのペイロード分解・応答処理（decode_xxx群）
-// - crate::filter: フィルタリング処理・判定ロジック（check_mail_filter）
 // - crate::printdaytimeln!: JSTタイムスタンプ付きログ出力マクロ
 //
 // 【役割】
@@ -32,10 +31,8 @@ use crate::{
     },
 }; // Milterコマンド種別定義・判定 // 各Milterコマンドの分解・応答処理
 
-use crate::filter::filter_check;
 use crate::init::Config;
 use crate::parse::parse_mail;
-use crate::spamhaus::report_to_spamhaus;
 use std::sync::{Arc, RwLock};
 
 /// クライアント1接続ごとの非同期処理（Milterプロトコル）
@@ -251,41 +248,23 @@ pub async fn handle_client(
             } else if let MilterCommand::Eoh = cmd {
                 if is_body_eob {
                     // パース処理でメール全体をパース・デバッグ出力・構造化
-                    if let Some(parsed_mail) = parse_mail(
+                    if parse_mail(
                         &header_fields,
                         &body_field,
                         &macro_fields,
+                        &config_val.storage_path,
                         config_val.remote_ip_target,
-                    ) {
-                        // フィルター用のHashMapに効率的に変換（構造体メソッド使用）
-                        let mail_values = parsed_mail.into_hash_map();
-                        // フィルター判定を実行（並列処理版）
-                        let filter_result = filter_check(&mail_values, &config_val);
-                        let (action, logname) = {
-                            let (a, l) = filter_result.as_ref().unwrap();
-                            (a.to_string(), l.to_string())
-                        };
+                        &config_val,
+                    )
+                    .is_some()
+                    {
                         crate::printdaytimeln!(
                             LOG_INFO,
-                            "[client] フィルター結果={}({})",
-                            action,
-                            logname
+                            "[client] parsed mail, returning CONTINUE to {}",
+                            peer_addr
                         );
-                        // クライアント(Sendmail/Postfix)への応答処理
-                        send_milter_response(&mut stream, &peer_addr, filter_result).await;
-                        // スパム判定され、かつSpamhaus_reportがyesの場合のみ報告
-                        if (action == "WARN" || action == "REJECT")
-                            && config_val.spamhaus_report
-                            && let Some(remote_ip) = mail_values.get("decode_remote_ip")
-                            && let Err(e) = report_to_spamhaus(
-                                remote_ip,
-                                &format!("Spam filtering {} with MilterAgent", logname),
-                                &config_val,
-                            )
-                            .await
-                        {
-                            crate::printdaytimeln!(LOG_INFO, "[client] Spamhaus設定エラー: {}", e);
-                        }
+                        let response = Some(("CONTINUE".to_string(), "continue".to_string()));
+                        send_milter_response(&mut stream, &peer_addr, response).await;
                     }
                 } else {
                     // actionは "CONTINUE"（0x06）で応答
@@ -294,9 +273,9 @@ pub async fn handle_client(
                         "[client] EOHコマンド受信: CONTINUE応答 (0x06) to {}",
                         peer_addr
                     );
-                    let filter_result = Some(("CONTINUE".to_string(), "continue".to_string()));
+                    let response = Some(("CONTINUE".to_string(), "continue".to_string()));
                     // クライアント(Sendmail/Postfix)への応答処理
-                    send_milter_response(&mut stream, &peer_addr, filter_result).await;
+                    send_milter_response(&mut stream, &peer_addr, response).await;
                 }
                 // BODYEOB(=is_body_eob==true)のときのみ、直前のヘッダ情報とボディ情報を出力
                 if is_body_eob {

@@ -16,12 +16,22 @@ Thumbs.db
 *.log
 
 # Configuration (optional - remove if you want to include sample config)
-# MilterAgent.conf
+# Example/sample configuration files are kept in `etc/` and tracked.
+# Do NOT commit actual runtime configuration files that may contain secrets
+# (keep samples like Parameter.conf.sample under version control).
 
-# Include some directory for configuration examples
+# Include directories that contain samples/templates
 !etc/
 !logrotate.d/
 !systemd/
+
+# Ignore real configuration files with secrets or environment-specific values
+etc/MilterSeparator.conf
+etc/MilterSeparator.d/Parameter.conf
+
+# NOTE: If these files are already tracked in the repository, stop tracking them with:
+#   git rm --cached etc/MilterSeparator.conf etc/MilterSeparator.d/Parameter.conf
+# then commit the change so the sensitive files are no longer pushed to remote.
 
 # Build artifacts
 *.exe

@@ -1,6 +1,6 @@
 // =========================
 // milter.rs
-// MilterAgent Milterコマンド処理モジュール
+// MilterSeparator Milterコマンド処理モジュール
 //
 // 【このファイルで使う主なクレート】
 // - tokio: 非同期TCP通信・I/O・応答送信などの非同期処理全般（net::TcpStream, io::AsyncWriteExt）
@@ -130,7 +130,7 @@ pub async fn decode_optneg(stream: &mut TcpStream, payload: &[u8]) {
         }
     } else {
         // ペイロード長不足時のエラー出力
-        println!(
+        crate::printdaytimeln!(crate::init::LOG_INFO,
             "[parser] SMFIC_OPTNEGペイロード長不足: {} bytes",
             payload.len()
         );
@@ -335,7 +335,7 @@ pub fn decode_data_macros(
             macro_name,
             macro_val
         );
-        // 先頭マクロ情報をHashMapに格納（フィルタリング処理で使用）
+        // 先頭マクロ情報をHashMapに格納（パース処理で参照）
         macro_fields.insert(macro_name.clone(), macro_val.clone());
     }
 
@@ -370,7 +370,7 @@ pub fn decode_data_macros(
             macro_name,
             macro_val
         );
-        // 残りマクロ情報をHashMapに格納（フィルタリング処理で使用）
+        // 残りマクロ情報をHashMapに格納（パース処理で参照）
         macro_fields.insert(macro_name.clone(), macro_val.clone());
         idx += 2; // 次のマクロペア（名前・値）へ移動
     }
@@ -466,10 +466,10 @@ pub fn decode_body(payload: &[u8], body_field: &mut String) {
 pub async fn send_milter_response(
     stream: &mut TcpStream,
     peer_addr: &str,
-    filter_result: Option<(String, String)>,
+    response: Option<(String, String)>,
 ) {
     // actionに応じてレスポンスコマンドを決定
-    let (resp_cmd, resp_size) = match &filter_result {
+    let (resp_cmd, resp_size) = match &response {
         Some((action, _)) if action == "NONE" => (0x61u8, 1u32), // NONE応答（0x61）
         Some((action, _)) if action == "ACCEPT" => (0x61u8, 1u32), // ACCEPT応答（0x61）
         Some((action, logname)) if action == "WARN" => {
@@ -477,7 +477,7 @@ pub async fn send_milter_response(
             // WARN応答の場合はADDHEADERコマンド(0x68)を送信
             let reply_packet = build_response_packet(
                 0x68u8, // ADDHEADERコマンド メッセージ部分の先頭には半角スペースをつけないと、つながってしまう
-                &format!("X-MilterAgent\0 Warning: '{logname}' by MilterAgent"),
+                &format!("X-MilterSeparator\0 Warning: '{logname}' by MilterSeparator"),
             );
             if let Err(e) = stream.write_all(&reply_packet).await {
                 crate::printdaytimeln!(
@@ -494,7 +494,7 @@ pub async fn send_milter_response(
             // REJECT応答の場合はREPLYCODEコマンド(0x79)を送信
             let reply_packet = build_response_packet(
                 0x79u8, // REPLYCODEコマンド
-                &format!("550 5.7.1 Rejected: '{logname}' by MilterAgent"),
+                &format!("550 5.7.1 Rejected: '{logname}' by MilterSeparator"),
             );
             if let Err(e) = stream.write_all(&reply_packet).await {
                 crate::printdaytimeln!(
@@ -508,16 +508,6 @@ pub async fn send_milter_response(
         }
         Some((action, _)) if action == "DROP" => {
             // DISCARD応答（0x64）
-            /*
-                        // DISCARD応答の場合でもREPLYCODEコマンド(0x79)を送信
-                        let reply_packet = build_response_packet(
-                            0x79u8, // REPLYCODEコマンド
-                            &format!("250 but, Dropped: '{}' by MilterAgent", logname),
-                        );
-                        if let Err(e) = stream.write_all(&reply_packet).await {
-                            crate::printdaytimeln!(LOG_DEBUG, "[response] REPLYCODE送信エラー: {}: {}", peer_addr, e);
-                        }
-            */
             (0x64u8, 1u32) // DISCARD応答 (0x64)
         }
         _ => (0x66u8, 1u32), // デフォルトはCONTINUE(0x66)応答
@@ -531,7 +521,7 @@ pub async fn send_milter_response(
         crate::printdaytimeln!(LOG_DEBUG, "[response] 応答送信エラー: {}: {}", peer_addr, e);
     // 送信失敗時はエラーログ
     } else {
-        let (action, logname) = filter_result.as_ref().unwrap();
+        let (action, logname) = response.as_ref().unwrap();
         crate::printdaytimeln!(
             LOG_DEBUG,
             "[response] 応答送信: (0x{:02X}) to {} | action={} logname={}",

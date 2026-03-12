@@ -1,0 +1,170 @@
+MilterSeparator — DB 初期設定メモ
+
+このファイルはプロジェクトルートに置く簡易マニュアルです。
+以下は SQLite3 / MySQL / PostgreSQL 各 DB の初期作成手順・推奨コマンド例と注意点です。
+
+共通テーブル定義 (参考 SQL)
+--------------------------------
+CREATE TABLE IF NOT EXISTS download_tbl (
+    uuid TEXT PRIMARY KEY,
+    download_count INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT NOT NULL,
+    zip_password TEXT,
+    url TEXT NOT NULL,
+    auth_mode TEXT NOT NULL,
+    auth_info TEXT,
+    expire_hours INTEGER NOT NULL,
+    max_downloads INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+（MilterSeparator の `db.rs` がこのスキーマを期待します）
+-
+0) milterユーザーの設定
+--------------------------------
+- MilterSeparator を root で実行するのは避けてください。専用のシステムユーザー `milter` を作成し、そのユーザーでサービスを実行することを推奨します。
+- 作成・設定例:
+$ sudo useradd --system --no-create-home --shell /sbin/nologin milter
+
+- 永続ディレクトリと所有権の設定例:
+$ sudo mkdir -p /var/lib/milterseparator
+$ sudo chown milter:apache /var/lib/milterseparator
+$ sudo chmod 750 /var/lib/milterseparator
+
+- DB ファイルを作成する際は可能なら `milter` ユーザーで作成してください（所有者が `milter` になるため権限が確実になります）。
+  例: `sudo -u milter sqlite3 /var/lib/milterseparator/db.sqlite3 "VACUUM;"`
+
+- Web（Apache/PHP）が DB を書き込む必要がある場合は、Web ユーザーを `milter` グループへ追加するか、所有グループを Web ユーザーにしてグループ書き込みを許可してください（ファイルは `660`、ディレクトリは `750` 等）。
+
+- SELinux が有効な場合はファイルコンテキストの調整が必要です（例: `sudo chcon -t httpd_sys_rw_content_t /var/lib/milterseparator/db.sqlite3`）。
+
+1) SQLite3
+--------------------------------
+- 利点: 軽量・サーバ不要。テストや単一ホスト運用に適する。
+- 推奨配置: `Database_Path` に永続領域を指定（例: /var/lib/milterseparator/db.sqlite3）
+
+例: データベース作成・スキーマ反映
+$ sudo mkdir -p /var/lib/milterseparator
+$ sudo chown milter:apache /var/lib/milterseparator
+$ sudo chmod 750 /var/lib/milterseparator
+
+# 推奨: `milter` ユーザーで DB を作成して所有権を確実にする
+$ sudo -u milter sqlite3 /var/lib/milterseparator/db.sqlite3 "CREATE TABLE IF NOT EXISTS download_tbl (uuid TEXT PRIMARY KEY, download_count INTEGER NOT NULL DEFAULT 0, expires_at TEXT NOT NULL, zip_password TEXT, url TEXT NOT NULL, auth_mode TEXT NOT NULL, auth_info TEXT, expire_hours INTEGER NOT NULL, max_downloads INTEGER NOT NULL, created_at TEXT NOT NULL);"
+
+# もし root 等でファイルが作成された場合は所有権とパーミッションを変更する
+$ sudo chown milter:apache /var/lib/milterseparator/db.sqlite3
+$ sudo chmod 660 /var/lib/milterseparator/db.sqlite3
+
+注意:
+- ファイルの所有者・パーミッションを適切に設定してください（Web サーバや PHP-FPM がファイルを書き込めること）。
+- SELinux/AppArmor を使用する環境ではラベルを確認してください。
+
+SQLite のジャーナルとディレクトリ権限 (重要)
+--------------------------------
+- 問題点: SQLite はトランザクション用にデータベースファイルと同じディレクトリに一時ファイル（`-journal` または WAL の場合は `-wal`/`-shm`）を作成します。これらのファイルを作成できないとアプリ側から「attempt to write a readonly database」のようなエラーが出ます。
+- 原因例: DB ファイル自体は書き込み可能でも、DB が置かれたディレクトリに Web プロセス（例: `apache` / `www-data`）のグループ書き込み権が無い場合、ジャーナルファイルが作れず書き込みエラーになります。
+
+対策（安全な権限付与の例）:
+1. 所有者を `milter:apache` にする（`milter` がサービス実行ユーザで、`apache` が Web グループの例）:
+  $ sudo chown -R milter:apache /var/lib/milterseparator
+
+2. ディレクトリに setgid とグループ書き込みを付ける（新規ファイルが `apache` グループになる）:
+  $ sudo find /var/lib/milterseparator -type d -exec chmod 2770 {} \;
+
+3. DB ファイルはグループ書き込み可能に（ファイルは 660）:
+  $ sudo find /var/lib/milterseparator -type f -exec chmod 660 {} \;
+
+4. CGI 等実行スクリプトは必要に応じて実行権を付与:
+  $ sudo find /var/lib/milterseparator -type f -name 'count.php' -exec chmod 755 {} \;
+
+5. SELinux を使用している場合はコンテキストを調整:
+  $ sudo chcon -t httpd_sys_rw_content_t /var/lib/milterseparator/db.sqlite3
+  # 永続的にするには semanage fcontext を利用してください
+
+確認コマンド例:
+$ sudo -u apache sqlite3 /var/lib/milterseparator/db.sqlite3 "PRAGMA journal_mode; PRAGMA locking_mode; PRAGMA integrity_check;"
+
+上記対応により、Web プロセスがジャーナル/ロック用ファイルを作成できるようになり、今回発生した `attempt to write a readonly database` エラーは解消されます。
+
+MilterSeparator.conf の例 (sqlite)
+Database_Type	 sqlite
+Database_Path	 /var/lib/milterseparator/db.sqlite3
+
+2) MySQL / MariaDB
+--------------------------------
+- 利点: 高負荷・複数ホストからのアクセスに適する。
+- 事前: MySQL サーバをインストールし、root 権限で操作します。
+
+例: データベース・ユーザー作成
+$ mysql -u root -p
+CREATE DATABASE milter_separator CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+CREATE USER 'milter'@'localhost' IDENTIFIED BY 'strongpassword';
+GRANT ALL PRIVILEGES ON milter_separator.* TO 'milter'@'localhost';
+FLUSH PRIVILEGES;
+EXIT;
+
+例: スキーマ作成（mysql CLI）
+$ mysql -u milter -p milter_separator
+# 上記の CREATE TABLE 文を実行（ただし `TEXT`/`INTEGER` は MySQL にマップされる）
+
+注意:
+- `expires_at` と `created_at` を DATETIME 型にしたい場合はスキーマを調整してください（現状コードは文字列を保存します）。
+- MySQL では適切な文字セット（utf8mb4）を使用してください。
+
+MilterSeparator.conf の例 (mysql)
+Database_Type	 mysql
+Database_Host	 127.0.0.1
+Database_Port	 3306
+Database_User	 milter
+Database_Password	 strongpassword
+Database_Name	 milter_separator
+
+3) PostgreSQL
+--------------------------------
+- 利点: 信頼性・拡張性・SQL 機能が強力。
+
+例: データベース・ユーザー作成
+$ sudo -u postgres psql
+CREATE DATABASE milter_separator;
+CREATE USER milter WITH PASSWORD 'strongpassword';
+GRANT ALL PRIVILEGES ON DATABASE milter_separator TO milter;
+\q
+
+例: スキーマ作成
+$ psql -U milter -d milter_separator -h localhost -W
+# 上述の CREATE TABLE 文を実行
+
+注意:
+- Postgres はタイムゾーン付き TIMESTAMP を使うことが多いですが、現状コードでは文字列で日時を保存しています。
+
+MilterSeparator.conf の例 (postgres)
+Database_Type	 postgres
+Database_Host	 127.0.0.1
+Database_Port	 5432
+Database_User	 milter
+Database_Password	 strongpassword
+Database_Name	 milter_separator
+
+4) Web サーバ側 (counter CGI / PHP) の注意点
+--------------------------------
+- カウンタ CGI は PHP スクリプトです（デフォルトファイル名は `count.cgi`）。Apache + mod_php または PHP-FPM + nginx いずれでも動作しますが、PDO ドライバが必要です:
+  - SQLite: php-sqlite3 (pdo_sqlite)
+  - MySQL: php-mysql (pdo_mysql)
+  - PostgreSQL: php-pgsql (pdo_pgsql)
+
+- カウンタ CGI を配置するディレクトリに対して実行権限を付与します（生成されるファイル名は `counter_cgi` 設定で変更可能、コードではデフォルトで `chmod 755` を設定します）。
+- `mailinfo.txt` 等の機密ファイルは `.htaccess` や Web サーバ設定で外部公開から保護してください（既に `.htaccess` を生成する実装あり）。
+
+5) テスト手順
+--------------------------------
+- SQLite の場合: `sqlite3 /var/lib/milterseparator/db.sqlite3 "SELECT count(*) FROM download_tbl;"`
+- MySQL の場合: `mysql -u milter -p -e "SELECT COUNT(*) FROM download_tbl;" milter_separator`
+- PostgreSQL の場合: `psql -U milter -d milter_separator -c "SELECT COUNT(*) FROM download_tbl;"`
+
+6) 運用上の注意
+--------------------------------
+- バックアップ: SQLite ファイルはコピー、MySQL/Postgres は通常の DB バックアップ手順を使用してください。
+- 永続化先ディレクトリ(`/var/lib/milterseparator`)の所有者・アクセス権に注意。
+`counter_template.cgi` と `download_template.html` は `etc/MilterSeparator.d/templates/` に配置されています。カスタマイズ後は配置場所を変える場合に `src/parse.rs` のテンプレート検索パスを更新してください。
+
+以上。必要ならこの内容で README に追加したり、インストールスクリプトを作成します。

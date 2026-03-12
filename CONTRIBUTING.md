@@ -1,6 +1,6 @@
-# Contributing to MilterAgent
+# Contributing to MilterSeparator
 
-Thank you for your interest in contributing to MilterAgent! This document provides guidelines for contributing to the project.
+Thank you for your interest in contributing to MilterSeparator! This document provides guidelines for contributing to the project.
 
 ## Development Setup
 
@@ -33,7 +33,7 @@ cargo clippy
 
 ```bash
 # Copy sample configuration
-cp MilterAgent.conf.sample MilterAgent.conf
+cp MilterSeparator.conf.sample MilterSeparator.conf
 
 # Run in development mode
 cargo run
@@ -54,7 +54,7 @@ Each module should have a header comment block like:
 ```rust
 // =========================
 // module_name.rs
-// MilterAgent Module Description
+// MilterSeparator Module Description
 //
 // 【このファイルで使う主なクレート】
 // - crate_name: Description of usage
@@ -105,7 +105,7 @@ Each module should have a header comment block like:
 
 3. **Test configuration reload**:
    ```bash
-   kill -HUP $(pidof milter_agent)
+   kill -HUP $(pidof milter_separator)
    ```
 
 ### Automated Testing
@@ -165,7 +165,7 @@ When reporting bugs or requesting features:
 
 ## License
 
-By contributing to MilterAgent, you agree that your contributions will be licensed under the MIT License.
+By contributing to MilterSeparator, you agree that your contributions will be licensed under the MIT License.
 
 ## Questions?
 

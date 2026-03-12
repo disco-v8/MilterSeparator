@@ -1,0 +1,26 @@
+```plaintext
+[Unit]
+Description=MilterSeparator Service
+Documentation=https://github.com/disco-v8/MilterSeparator
+After=network.target
+Before=postfix.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/milter_separator
+ExecReload=/bin/kill -HUP $MAINPID
+####User=milter
+####Group=milter
+RuntimeDirectory=milter_separator
+Restart=always
+TimeoutStopSec=10s
+
+# Security: run with a limited set of capabilities and protect system files
+ProtectSystem=full
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+
+```
