@@ -1,0 +1,126 @@
+# =============================================================================
+# Parameter.conf.sample - MilterSeparator パラメータ設定ファイル（サンプル）
+#
+# このファイルはオプションパラメータの説明とサンプル値を示します。
+# 実際に有効にするには、コメント行（先頭の '# '）を削除して値を調整してください。
+#
+# 形式: キー	値
+#       値の型はコメントで示します。
+#
+# =============================================================================
+# パスワード強度ポリシー
+#  - low:    最低限の強度（アルファベットと数字で8文字以上）
+#  - medium: 中程度の強度（大文字・小文字・数字・記号を含む12文字以上）
+#  - high:   高度な強度（大文字・小文字・数字・記号を含む16文字以上）
+password_strength	medium
+
+# ---------------------------------------------
+# ダウンロード関連
+# ---------------------------------------------
+# max_downloads    : 数値（1以上）
+#                   ダウンロード可能な最大回数の上限。
+#                   例: 100
+max_downloads	5
+
+# expire_hours     : 数値（時間）
+#                   ファイルやトークンの有効期限（時間）。
+#                   例: 168 (7日間)
+expire_hours	168
+
+# ---------------------------------------------
+# ダウンロード認証設定（追加）
+# ---------------------------------------------
+# download_auth_mode: 認証方式（"minimal" | "basic" | "token"）
+#   - minimal: UUID 存在チェックのみを行う。追加認証は行わない。
+#   - basic:   Apache/Nginx 側で BASIC 認証を行う想定。ユーザー名/パスワードを設定。
+#   - token:   Axum ハンドラ内で HMAC トークンを生成して URL に付与する方式。
+# サンプル: minimal
+download_auth_mode	minimal
+####download_auth_mode	basic
+####download_auth_mode	token
+
+# basic_auth_user / basic_auth_password:
+#   BASIC 認証を利用する場合に使用する認証情報。
+#   Apache/Nginx の .htpasswd 相当の検証を行う場合はサーバ側で設定を行ってください。
+# サンプル:
+basic_auth_user	user
+basic_auth_password	download
+
+# token_auth_key / token_auth_type:
+#   トークン方式（token）の場合に HMAC 生成に使う秘密鍵とアルゴリズム。
+#   token_auth_type の例: "hmac-sha256", "hmac-sha512"。デフォルトは "hmac-sha256"。
+# サンプル:
+token_auth_key	this_is_a_secret_key_change_me
+token_auth_type	hmac-sha256
+
+# ---------------------------------------------
+# 削除・バックグラウンド処理
+# ---------------------------------------------
+# delete_mode      : 列挙値("delete" | "script")
+#                   自動削除の方法。"delete" は単純削除、"script" はカスタムスクリプト実行。
+delete_mode	delete
+
+# delete_script_path: 文字列（スクリプトのフルパス）
+#                   delete_mode が "script" の場合に実行されるスクリプトパス。
+# delete_script_path	/usr/local/bin/milterseparator_delete.sh
+
+# ---------------------------------------------
+# ストレージ / URL
+# ---------------------------------------------
+# storage_path     : 文字列（ディレクトリパス）
+#                   添付ファイルや一時ファイルの保存先。
+storage_path	/var/lib/milterseparator
+
+# base_url         : 文字列（URL）
+#                   外部参照用のベースURL（ダウンロードリンク生成など）。
+base_url	https://alma9.fwnet.jp/MilterSeparator
+
+# counter_cgi     : 文字列（ファイル名）
+#                   各 UUID ディレクトリに生成されるカウンタ CGI のファイル名。
+#                   PHP-FPM で動かす場合は .php 拡張子にする必要がある環境がある。
+#                   デフォルト: count.cgi
+####counter_cgi	count.cgi
+counter_cgi	count.php
+
+# ---------------------------------------------
+# データベース / Database
+# ---------------------------------------------
+# Database_Type    : 列挙値（"sqlite" | "mysql" | "postgres"）
+#                   使用するデータベースの種類。
+# Database_Path    : 文字列（ファイルパス）
+#                   SQLite 使用時のデータベースファイルパス。
+# Database_Host    : 文字列（ホスト名/IP）
+#                   MySQL / PostgreSQL 使用時の接続先ホスト。
+# Database_Port    : 数値（ポート番号）
+#                   MySQL デフォルト: 3306 / PostgreSQL デフォルト: 5432
+# Database_User    : 文字列
+#                   MySQL / PostgreSQL 接続ユーザー名。
+# Database_Password: 文字列
+#                   MySQL / PostgreSQL 接続パスワード。
+# Database_Name    : 文字列
+#                   MySQL / PostgreSQL 使用時のデータベース名。
+Database_Type	sqlite
+Database_Path	/var/lib/milterseparator/db.sqlite3
+
+# --- MySQL を使用する場合はこちらのコメントを外して設定してください
+####Database_Type	mysql
+####Database_Host	127.0.0.1
+####Database_Port	3306
+####Database_User	milter
+####Database_Password	strongpassword
+####Database_Name	milter_separator
+
+# --- PostgreSQL を使用する場合はこちらのコメントを外して設定してください
+####Database_Type	postgres
+####Database_Host	127.0.0.1
+####Database_Port	5432
+####Database_User	milter
+####Database_Password	strongpassword
+####Database_Name	milter_separator
+
+# =============================================================================
+# 備考
+# - コメント行の先頭 '# ' を削除するとその行が有効になります。
+# - 値の型やセキュリティ要件は環境に合わせて調整してください。
+# - 設定変更後はサービスの再起動または SIGHUP によるリロードを行ってください。
+# =============================================================================

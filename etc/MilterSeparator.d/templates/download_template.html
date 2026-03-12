@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>ダウンロード</title>
+    <style>
+      :root{
+        --bg: #ffffff;
+        --muted: #6b7280;
+        --card: #f8fafc;
+        --accent: #2563eb;
+        --radius: 12px;
+        --shadow: 0 6px 18px rgba(15,23,42,0.06);
+        --max-width: 900px;
+        --gap: 20px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans JP", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+        color: #111827;
+        line-height: 1.5;
+      }
+      html,body{height:100%;background:var(--bg);margin:0;padding:0}
+      .wrap{min-height:100%;display:flex;align-items:center;justify-content:center;padding:40px 16px}
+      .container{width:100%;max-width:var(--max-width)}
+      .card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:24px;display:grid;grid-template-columns:1fr;gap:16px}
+      .header{display:flex;gap:12px;align-items:center}
+      .avatar{width:56px;height:56px;border-radius:10px;background:linear-gradient(135deg,#e6eefb,#eef2ff);display:flex;align-items:center;justify-content:center;font-weight:600;color:var(--accent)}
+      h1{font-size:1.25rem;margin:0}
+      .meta{color:var(--muted);font-size:0.95rem}
+      .section{background:#fff;padding:16px;border-radius:10px;border:1px solid rgba(15,23,42,0.03)}
+      .attachments ul{margin:0;padding-left:1.1rem;color:var(--muted)}
+      .download-row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+      .file-meta{display:flex;flex-direction:column}
+      .file-name{font-weight:600}
+      .password-area{margin-top:12px;display:flex;gap:8px;align-items:center}
+      .copy-btn{background:transparent;border:1px solid rgba(0,0,0,0.06);padding:8px 10px;border-radius:8px;cursor:pointer}
+      .btn{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;background:var(--accent);color:#fff;text-decoration:none;font-weight:600}
+      .hint{color:var(--muted);font-size:0.92rem}
+      .small{font-size:0.9rem;color:var(--muted)}
+      .section-title{color:#111827;font-weight:600}
+      pre.pass{background:#f3f4f6;padding:8px;border-radius:6px;display:inline-block}
+      footer{margin-top:8px;color:var(--muted);font-size:0.85rem;text-align:center}
+      @media (min-width:700px){.card{grid-template-columns:1fr 320px}}
+      @media (max-width:420px){.avatar{width:46px;height:46px}}
+      /* reveal on hover handled by JS; keep CSS only */
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="container">
+        <div class="card">
+          <div>
+            <div class="header">
+              <div class="avatar">ZIP</div>
+              <div>
+                <h1>{{subject}}</h1>
+                  <div class="meta">From: {{from}}</div>
+                  <div class="meta">To: {{to}}</div>
+                  <div class="meta">Date: {{generated_at}}</div>
+                  <div class="meta">ZIP Size: {{zip_size}}</div>
+              </div>
+            </div>
+
+            <div class="section" style="margin-top:12px">
+              <div id="zipsection" class="download-row" style="margin-top:0;margin-bottom:8px">
+                <a class="btn" href="{{zip_url}}" onclick="event.preventDefault(); downloadZip();">ダウンロード（{{zip_file}}）</a>
+              </div>
+
+              <h4>添付ファイル一覧（ZIPファイルの中身）</h4>
+              {{attachments}}
+
+              <div class="password-area" style="margin-top:12px">
+                <div class="small">パスワード</div>
+                <pre class="pass" data-password="{{zip_password}}">{{zip_password_masked}}</pre>
+                <button class="copy-btn" aria-label="パスワードをコピー">コピー</button>
+              </div>
+            </div>
+          </div>
+
+          <aside>
+            <div class="section">
+              <h4>利用上の注意</h4>
+              <div class="small">有効期限やダウンロード回数制限はサーバー側で管理されます。</div>
+            </div>
+          </aside>
+        </div>
+
+        <footer>Powered by MilterSeparator</footer>
+      </div>
+    </div>
+
+    <!-- token 認証時は token.js を読み込んでトークン検証 -->
+    <script src="token.js"></script>
+    <script>
+      // パスワードの表示・コピー処理
+      (function(){
+        function copyText(text){
+          if(navigator.clipboard && navigator.clipboard.writeText){
+            return navigator.clipboard.writeText(text);
+          }
+          // fallback
+          var ta = document.createElement('textarea');
+          ta.value = text; document.body.appendChild(ta); ta.select();
+          try{ document.execCommand('copy'); }catch(e){}
+          ta.remove();
+          return Promise.resolve();
+        }
+        document.addEventListener('DOMContentLoaded', function(){
+          var passEl = document.querySelector('.pass');
+          var btn = document.querySelector('.copy-btn');
+          if(!passEl) return;
+          var real = passEl.getAttribute('data-password') || '';
+          // hover で表示
+          passEl.addEventListener('mouseenter', function(){
+            if(real) passEl.textContent = real;
+          });
+          passEl.addEventListener('mouseleave', function(){
+            var masked = passEl.getAttribute('data-password') ? passEl.textContent.replace(/./g,'•') : '';
+            if(masked) passEl.textContent = masked;
+          });
+          // copy ボタン
+          if(btn){
+            btn.addEventListener('click', function(){
+              if(!real) return;
+              copyText(real).then(function(){
+                btn.textContent = 'コピー済み';
+                setTimeout(function(){ btn.textContent = 'コピー'; },1500);
+              });
+            });
+          }
+          // 初期 mask
+          if(real){
+            var len = Math.max(6, real.length);
+            passEl.textContent = Array(len+1).join('•');
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>
