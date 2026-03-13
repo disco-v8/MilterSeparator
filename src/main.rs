@@ -15,6 +15,7 @@
 // =========================
 
 mod client; // クライアント受信処理
+mod db;
 mod download;
 mod init; // 設定ファイル管理
 mod logging; // JSTタイムスタンプ付きログ出力
@@ -22,7 +23,6 @@ mod milter; // Milterコマンドごとのデコード・応答処理
 mod milter_command; // Milterコマンド定義
 mod parse; // メールパース・出力処理
 mod zipper; // 添付保存 / ZIP 処理 // download URL generator (axum)
-mod db;
 
 use init::{LOG_INFO, LOG_TRACE, load_config};
 use std::env;

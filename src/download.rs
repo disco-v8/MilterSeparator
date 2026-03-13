@@ -259,7 +259,11 @@ pub fn write_download_static_files(dir: &Path, config: &crate::init::Config) -> 
             let fname = a.get("filename").and_then(|v| v.as_str()).unwrap_or("");
             let size_val = a.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
             let size = human_readable_size(size_val);
-            attachments_html.push_str(&format!("  <li>{} ({})</li>\n", html_escape(fname), html_escape(&size)));
+            attachments_html.push_str(&format!(
+                "  <li>{} ({})</li>\n",
+                html_escape(fname),
+                html_escape(&size)
+            ));
         }
         attachments_html.push_str("</ul>\n");
     }
@@ -349,7 +353,8 @@ pub fn write_download_static_files(dir: &Path, config: &crate::init::Config) -> 
             // Basic 設定に mailinfo 保護ルールを追記する
             let htaccess = format!(
                 "AuthType Basic\nAuthName \"MilterSeparator\"\nAuthUserFile {}/.htpasswd\nRequire valid-user\n\n{}",
-                dir.display(), deny_mailinfo
+                dir.display(),
+                deny_mailinfo
             );
             let htaccess_path = dir.join(".htaccess");
             if let Err(e) = fs::write(&htaccess_path, htaccess) {
@@ -391,10 +396,7 @@ pub fn write_download_static_files(dir: &Path, config: &crate::init::Config) -> 
 
     // download.html を書き出す
     // UUID を取得してテンプレート内で使う
-    let uuid = dir
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let uuid = dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
     // ensure template can receive {{uuid}}
     let out_path = dir.join("download.html");

@@ -41,3 +41,10 @@ etc/MilterSeparator.d/Parameter.conf
 # Temporary files
 *.tmp
 *.temp
+
+# Ensure sample/config templates are tracked even if a '*.d' catch-all exists.
+# We ignore runtime-config files but explicitly allow sample/template files below.
+!etc/MilterSeparator.d/
+!etc/MilterSeparator.d/Parameter.conf.sample
+!etc/MilterSeparator.d/templates/
+!etc/MilterSeparator.d/templates/*

@@ -26,19 +26,19 @@ use mail_parser::{MessageParser, MimeHeaders, PartType}; // メールパース�
 use serde_json::json;
 use sha2::{Sha256, Sha512};
 use std::collections::HashMap;
+use std::fs;
 use std::io::Cursor;
 use std::io::Read as IoRead;
 use std::io::Write;
-use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 type HmacSha256 = Hmac<Sha256>;
 type HmacSha512 = Hmac<Sha512>;
+use crate::db;
 use crate::init::{LOG_DEBUG, LOG_INFO, LOG_TRACE};
 use crate::zipper; // 添付保存ユーティリティ
 use chrono::Local;
 use uuid::Uuid;
-use crate::db;
 
 /// 不可視文字と制御文字を包括的に除去する関数
 ///
@@ -727,18 +727,23 @@ pub fn parse_mail(
                     // expires_at を計算（expire_hours を元に）
                     let expires_at = if config.expire_hours == 0 {
                         // 0 は無期限扱いとして遠い未来を設定
-                        (Local::now() + chrono::Duration::weeks(52 * 100)).format("%Y-%m-%d %H:%M:%S %:z").to_string()
+                        (Local::now() + chrono::Duration::weeks(52 * 100))
+                            .format("%Y-%m-%d %H:%M:%S %:z")
+                            .to_string()
                     } else {
-                        (Local::now() + chrono::Duration::hours(config.expire_hours as i64)).format("%Y-%m-%d %H:%M:%S %:z").to_string()
+                        (Local::now() + chrono::Duration::hours(config.expire_hours as i64))
+                            .format("%Y-%m-%d %H:%M:%S %:z")
+                            .to_string()
                     };
-
-                    
 
                     // counter CGI を生成（テンプレートファイル /etc/.../counter_template.cgi を優先）
                     let db_type = config.database_type.to_string();
                     let db_path = config.database_path.clone().unwrap_or_default();
                     let db_host = config.database_host.clone().unwrap_or_default();
-                    let db_port = config.database_port.map(|p| p.to_string()).unwrap_or_default();
+                    let db_port = config
+                        .database_port
+                        .map(|p| p.to_string())
+                        .unwrap_or_default();
                     let db_user = config.database_user.clone().unwrap_or_default();
                     let db_password = config.database_password.clone().unwrap_or_default();
                     let db_name = config.database_name.clone().unwrap_or_default();
@@ -791,11 +796,16 @@ $stmt->execute([$uuid]);
                         crate::printdaytimeln!(LOG_DEBUG, "[parser] write count.cgi error: {}", e);
                     } else {
                         // chmod 755
-                        let _ = std::fs::set_permissions(&count_path, fs::Permissions::from_mode(0o755));
+                        let _ = std::fs::set_permissions(
+                            &count_path,
+                            fs::Permissions::from_mode(0o755),
+                        );
                     }
 
                     // .htaccess を生成（mailinfo.txt への外部アクセスを拒否）
-                    let mut ht = String::from("<Files \"mailinfo.txt\">\n    Require all denied\n</Files>\n");
+                    let mut ht = String::from(
+                        "<Files \"mailinfo.txt\">\n    Require all denied\n</Files>\n",
+                    );
                     if canonical_auth_mode == "basic" {
                         ht.push_str("\nAuthType Basic\nAuthName \"MilterSeparator\"\nAuthUserFile .htpasswd\nRequire valid-user\n");
                     }
@@ -833,7 +843,11 @@ $stmt->execute([$uuid]);
                     };
 
                     if let Err(e) = db::insert_download_record(config, &record) {
-                        crate::printdaytimeln!(LOG_DEBUG, "[parser] insert_download_record error: {}", e);
+                        crate::printdaytimeln!(
+                            LOG_DEBUG,
+                            "[parser] insert_download_record error: {}",
+                            e
+                        );
                     }
 
                     // ZIP作成を試みる（親ディレクトリに作成してから UUID ディレクトリへ移動）
@@ -851,29 +865,47 @@ $stmt->execute([$uuid]);
                         files_for_zip.push((entry_name, p.clone()));
                     }
 
-                    match zipper::create_zip_from_files(files_for_zip, &parent_zip_path, Some(&pw)) {
+                    match zipper::create_zip_from_files(files_for_zip, &parent_zip_path, Some(&pw))
+                    {
                         Ok(()) => {
                             // ensure target dir exists and move zip into it
                             if let Err(e) = std::fs::create_dir_all(&dir) {
-                                crate::printdaytimeln!(LOG_DEBUG, "[parser] create dir error: {}", e);
+                                crate::printdaytimeln!(
+                                    LOG_DEBUG,
+                                    "[parser] create dir error: {}",
+                                    e
+                                );
                             }
                             let move_res = std::fs::rename(&parent_zip_path, &final_zip_path)
                                 .or_else(|_| {
                                     // fallback: copy then remove
-                                    std::fs::copy(&parent_zip_path, &final_zip_path).and_then(|_| std::fs::remove_file(&parent_zip_path))
+                                    std::fs::copy(&parent_zip_path, &final_zip_path)
+                                        .and_then(|_| std::fs::remove_file(&parent_zip_path))
                                 });
                             match move_res {
                                 Ok(_) => {
                                     zip_ok = true;
-                                    crate::printdaytimeln!(LOG_INFO, "[parser] created zip: {}", final_zip_path.display());
+                                    crate::printdaytimeln!(
+                                        LOG_INFO,
+                                        "[parser] created zip: {}",
+                                        final_zip_path.display()
+                                    );
                                 }
                                 Err(e) => {
-                                    crate::printdaytimeln!(LOG_DEBUG, "[parser] move zip error: {}", e);
+                                    crate::printdaytimeln!(
+                                        LOG_DEBUG,
+                                        "[parser] move zip error: {}",
+                                        e
+                                    );
                                 }
                             }
                         }
                         Err(e) => {
-                            crate::printdaytimeln!(LOG_DEBUG, "[parser] create_zip_from_files error: {}", e);
+                            crate::printdaytimeln!(
+                                LOG_DEBUG,
+                                "[parser] create_zip_from_files error: {}",
+                                e
+                            );
                         }
                     }
 
@@ -893,7 +925,9 @@ $stmt->execute([$uuid]);
                     // 生成日時と ZIP サイズを付与する
                     let generated_at = Local::now().format("%Y-%m-%d %H:%M:%S %:z").to_string();
                     let zip_info = if zip_ok {
-                        let zip_size = std::fs::metadata(&final_zip_path).map(|m| m.len()).unwrap_or(0);
+                        let zip_size = std::fs::metadata(&final_zip_path)
+                            .map(|m| m.len())
+                            .unwrap_or(0);
                         json!({
                             "file": zip_name,
                             "password": pw,
@@ -930,7 +964,9 @@ $stmt->execute([$uuid]);
                                 );
                             }
                             // mailinfo を書き終えたら、ダウンロード用静的ファイルを生成する
-                            if let Err(e) = crate::download::write_download_static_files(&dir, config) {
+                            if let Err(e) =
+                                crate::download::write_download_static_files(&dir, config)
+                            {
                                 crate::printdaytimeln!(
                                     LOG_DEBUG,
                                     "[parser] write download static files error: {}",

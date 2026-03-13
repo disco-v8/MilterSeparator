@@ -130,7 +130,8 @@ pub async fn decode_optneg(stream: &mut TcpStream, payload: &[u8]) {
         }
     } else {
         // ペイロード長不足時のエラー出力
-        crate::printdaytimeln!(crate::init::LOG_INFO,
+        crate::printdaytimeln!(
+            crate::init::LOG_INFO,
             "[parser] SMFIC_OPTNEGペイロード長不足: {} bytes",
             payload.len()
         );

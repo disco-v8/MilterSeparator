@@ -54,7 +54,7 @@ pub struct Config {
     pub storage_path: String,
     pub base_url: String,
     // Database settings
-    pub database_type: String, // sqlite / mysql / postgres
+    pub database_type: String,         // sqlite / mysql / postgres
     pub database_path: Option<String>, // for sqlite
     pub database_host: Option<String>,
     pub database_port: Option<u16>,
@@ -415,8 +415,7 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
                         values.database_type = v;
                     }
                 }
-            }
-            else if line.starts_with("Database_Path") {
+            } else if line.starts_with("Database_Path") {
                 if let Some((_, value)) = split_key_value(line) {
                     let full_value = collect_multiline_value(&mut lines, value, false);
                     let v = full_value.trim();
@@ -424,8 +423,7 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
                         values.database_path = Some(v.to_string());
                     }
                 }
-            }
-            else if line.starts_with("Database_Host") {
+            } else if line.starts_with("Database_Host") {
                 if let Some((_, value)) = split_key_value(line) {
                     let full_value = collect_multiline_value(&mut lines, value, false);
                     let v = full_value.trim();
@@ -433,8 +431,7 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
                         values.database_host = Some(v.to_string());
                     }
                 }
-            }
-            else if line.starts_with("Database_Port") {
+            } else if line.starts_with("Database_Port") {
                 if let Some((_, value)) = split_key_value(line) {
                     let full_value = collect_multiline_value(&mut lines, value, false);
                     let v = full_value.trim();
@@ -442,8 +439,7 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
                         values.database_port = Some(n.to_string());
                     }
                 }
-            }
-            else if line.starts_with("Database_User") {
+            } else if line.starts_with("Database_User") {
                 if let Some((_, value)) = split_key_value(line) {
                     let full_value = collect_multiline_value(&mut lines, value, false);
                     let v = full_value.trim();
@@ -451,8 +447,7 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
                         values.database_user = Some(v.to_string());
                     }
                 }
-            }
-            else if line.starts_with("Database_Password") {
+            } else if line.starts_with("Database_Password") {
                 if let Some((_, value)) = split_key_value(line) {
                     let full_value = collect_multiline_value(&mut lines, value, false);
                     let v = full_value.trim();
@@ -460,8 +455,7 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
                         values.database_password = Some(v.to_string());
                     }
                 }
-            }
-            else if line.starts_with("Database_Name") {
+            } else if line.starts_with("Database_Name") {
                 if let Some((_, value)) = split_key_value(line) {
                     let full_value = collect_multiline_value(&mut lines, value, false);
                     let v = full_value.trim();
@@ -469,8 +463,7 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
                         values.database_name = Some(v.to_string());
                     }
                 }
-            }
-            else if line.starts_with("counter_cgi") {
+            } else if line.starts_with("counter_cgi") {
                 if let Some((_, value)) = split_key_value(line) {
                     let full_value = collect_multiline_value(&mut lines, value, false);
                     let v = full_value.trim();

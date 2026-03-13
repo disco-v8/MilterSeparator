@@ -28,13 +28,13 @@
 
 use crate::init::Config;
 use chrono::Local;
-use serde_json::Value;
+use mysql::params; // MySQL 名前付きパラメータマクロ
 use mysql::prelude::Queryable; // MySQL クエリ実行トレイト（query_drop, exec_drop 等）
-use mysql::params;             // MySQL 名前付きパラメータマクロ
-use std::process::Command;     // 外部コマンド（chown）呼び出し用
+use serde_json::Value;
 use std::os::unix::fs::PermissionsExt; // Unix パーミッション数値設定用（set_mode）
+use std::process::Command; // 外部コマンド（chown）呼び出し用
 use tokio_postgres as tokio_pg; // PostgreSQL 非同期クライアント（エイリアス）
-use tokio_postgres::NoTls;      // TLS なし接続設定（ローカル接続向け）
+use tokio_postgres::NoTls; // TLS なし接続設定（ローカル接続向け）
 
 // =========================
 // 構造体定義
@@ -160,7 +160,6 @@ CREATE TABLE IF NOT EXISTS download_tokens (
 /// "Cannot start a runtime from within a runtime" panic が発生するため使用しない。
 pub async fn init_db(config: &Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match config.database_type.as_str() {
-
         // ===== SQLite =====
         "sqlite" => {
             if let Some(path) = &config.database_path {
@@ -168,8 +167,12 @@ pub async fn init_db(config: &Config) -> Result<(), Box<dyn std::error::Error + 
                 // 事前に create_dir_all で作成する（既存の場合は何もしない）
                 if let Some(parent) = std::path::Path::new(path).parent() {
                     if let Err(e) = std::fs::create_dir_all(parent) {
-                        crate::printdaytimeln!(crate::init::LOG_INFO,
-                            "[db] warn: could not create parent dir {}: {}", parent.display(), e);
+                        crate::printdaytimeln!(
+                            crate::init::LOG_INFO,
+                            "[db] warn: could not create parent dir {}: {}",
+                            parent.display(),
+                            e
+                        );
                     } else {
                         // PHP/Apache が SQLite のジャーナルファイルを作成できるよう
                         // ディレクトリに setgid (2770) を設定する
@@ -177,13 +180,22 @@ pub async fn init_db(config: &Config) -> Result<(), Box<dyn std::error::Error + 
                             let mut perms = meta.permissions();
                             perms.set_mode(0o2770); // rwxrws--- (setgid)
                             if let Err(e) = std::fs::set_permissions(parent, perms) {
-                                crate::printdaytimeln!(crate::init::LOG_INFO,
-                                    "[db] warn: could not chmod parent dir {}: {}", parent.display(), e);
+                                crate::printdaytimeln!(
+                                    crate::init::LOG_INFO,
+                                    "[db] warn: could not chmod parent dir {}: {}",
+                                    parent.display(),
+                                    e
+                                );
                             }
                         }
                         // ディレクトリの所有者を milter:apache 等に変更（best-effort）
-                        let chown_target = format!("{}:{}", &config.milter_user, &config.milter_group);
-                        let _ = Command::new("chown").arg("-R").arg(&chown_target).arg(parent).status();
+                        let chown_target =
+                            format!("{}:{}", &config.milter_user, &config.milter_group);
+                        let _ = Command::new("chown")
+                            .arg("-R")
+                            .arg(&chown_target)
+                            .arg(parent)
+                            .status();
                     }
                 }
 
@@ -199,19 +211,29 @@ pub async fn init_db(config: &Config) -> Result<(), Box<dyn std::error::Error + 
                     let mut perms = meta.permissions();
                     perms.set_mode(0o660); // rw-rw----
                     if let Err(e) = std::fs::set_permissions(path, perms) {
-                        crate::printdaytimeln!(crate::init::LOG_INFO,
-                            "[db] warn: could not chmod db file {}: {}", path, e);
+                        crate::printdaytimeln!(
+                            crate::init::LOG_INFO,
+                            "[db] warn: could not chmod db file {}: {}",
+                            path,
+                            e
+                        );
                     }
                 }
                 // DB ファイルの所有者を milter:apache に変更（best-effort）
                 let chown_target = format!("{}:{}", &config.milter_user, &config.milter_group);
                 let _ = Command::new("chown").arg(&chown_target).arg(path).status();
 
-                crate::printdaytimeln!(crate::init::LOG_INFO, "[db] initialized sqlite at {}", path);
+                crate::printdaytimeln!(
+                    crate::init::LOG_INFO,
+                    "[db] initialized sqlite at {}",
+                    path
+                );
             } else {
                 // 設定ファイルに Database_Path が存在しない場合は初期化をスキップ
-                crate::printdaytimeln!(crate::init::LOG_INFO,
-                    "[db] sqlite selected but no Database_Path provided");
+                crate::printdaytimeln!(
+                    crate::init::LOG_INFO,
+                    "[db] sqlite selected but no Database_Path provided"
+                );
             }
         }
 
@@ -222,10 +244,10 @@ pub async fn init_db(config: &Config) -> Result<(), Box<dyn std::error::Error + 
             let port = config.database_port.unwrap_or(3306);
             let user = config.database_user.as_deref().unwrap_or("");
             let pass = config.database_password.as_deref().unwrap_or("");
-            let db   = config.database_name.as_deref().unwrap_or("");
+            let db = config.database_name.as_deref().unwrap_or("");
 
             // mysql クレートは URL 形式で接続設定を受け取る
-            let url  = format!("mysql://{}:{}@{}:{}/{}", user, pass, host, port, db);
+            let url = format!("mysql://{}:{}@{}:{}/{}", user, pass, host, port, db);
             let opts = mysql::Opts::from_url(&url)?;
             // 接続プールを生成して 1 本接続を借用
             let pool = mysql::Pool::new(opts)?;
@@ -236,7 +258,12 @@ pub async fn init_db(config: &Config) -> Result<(), Box<dyn std::error::Error + 
             // ダウンロードトークン管理テーブルを作成（MySQL 用 DATETIME 型を使用）
             conn.query_drop(CREATE_DOWNLOAD_TOKENS_MYSQL)?;
 
-            crate::printdaytimeln!(crate::init::LOG_INFO, "[db] initialized mysql on {}:{}", host, port);
+            crate::printdaytimeln!(
+                crate::init::LOG_INFO,
+                "[db] initialized mysql on {}:{}",
+                host,
+                port
+            );
         }
 
         // ===== PostgreSQL =====
@@ -246,10 +273,13 @@ pub async fn init_db(config: &Config) -> Result<(), Box<dyn std::error::Error + 
             let port = config.database_port.unwrap_or(5432);
             let user = config.database_user.as_deref().unwrap_or("");
             let pass = config.database_password.as_deref().unwrap_or("");
-            let db   = config.database_name.as_deref().unwrap_or("");
+            let db = config.database_name.as_deref().unwrap_or("");
 
             // tokio-postgres はキースペース区切りの接続文字列を使用する
-            let connstr = format!("host={} port={} user={} password={} dbname={}", host, port, user, pass, db);
+            let connstr = format!(
+                "host={} port={} user={} password={} dbname={}",
+                host, port, user, pass, db
+            );
 
             // 非同期接続を確立する（await しているため Tokio ランタイム上で動作）
             match tokio_pg::connect(&connstr, NoTls).await {
@@ -258,17 +288,26 @@ pub async fn init_db(config: &Config) -> Result<(), Box<dyn std::error::Error + 
                     // 別タスクで駆動させないと `client` の操作がブロックする。
                     tokio::spawn(async move {
                         if let Err(e) = connection.await {
-                            crate::printdaytimeln!(crate::init::LOG_INFO,
-                                "[db] tokio_postgres connection error: {}", e);
+                            crate::printdaytimeln!(
+                                crate::init::LOG_INFO,
+                                "[db] tokio_postgres connection error: {}",
+                                e
+                            );
                         }
                     });
 
                     // テーブルを一括作成（IF NOT EXISTS なので冪等）
                     client.batch_execute(CREATE_TABLE_SQL).await?;
-                    client.batch_execute(CREATE_DOWNLOAD_TOKENS_POSTGRES).await?;
+                    client
+                        .batch_execute(CREATE_DOWNLOAD_TOKENS_POSTGRES)
+                        .await?;
 
-                    crate::printdaytimeln!(crate::init::LOG_INFO,
-                        "[db] initialized postgres on {}:{}", host, port);
+                    crate::printdaytimeln!(
+                        crate::init::LOG_INFO,
+                        "[db] initialized postgres on {}:{}",
+                        host,
+                        port
+                    );
                 }
                 Err(e) => {
                     // 接続失敗は復旧不能なためエラーを上位に伝播させる
@@ -280,8 +319,11 @@ pub async fn init_db(config: &Config) -> Result<(), Box<dyn std::error::Error + 
         // ===== 未知の DB 種別 =====
         other => {
             // 設定ミスに備えて警告を出して処理をスキップする（panic はしない）
-            crate::printdaytimeln!(crate::init::LOG_INFO,
-                "[db] unknown database type '{}', skipping init", other);
+            crate::printdaytimeln!(
+                crate::init::LOG_INFO,
+                "[db] unknown database type '{}', skipping init",
+                other
+            );
         }
     }
     Ok(())
@@ -314,7 +356,6 @@ pub fn insert_download_record(
     let created_at = Local::now().format("%Y-%m-%d %H:%M:%S %:z").to_string();
 
     match config.database_type.as_str() {
-
         // ===== SQLite =====
         "sqlite" => {
             if let Some(path) = &config.database_path {
@@ -332,7 +373,7 @@ pub fn insert_download_record(
                         record.zip_password.as_deref(), // Option<String> → Option<&str>
                         record.url,
                         record.auth_mode,
-                        auth_info_str,                  // Option<String> → NULL or TEXT
+                        auth_info_str, // Option<String> → NULL or TEXT
                         record.expire_hours,
                         record.max_downloads,
                         created_at
@@ -348,11 +389,11 @@ pub fn insert_download_record(
             let port = config.database_port.unwrap_or(3306);
             let user = config.database_user.as_deref().unwrap_or("");
             let pass = config.database_password.as_deref().unwrap_or("");
-            let db   = config.database_name.as_deref().unwrap_or("");
+            let db = config.database_name.as_deref().unwrap_or("");
 
             // mysql クレートは毎回 Pool を生成するが、
             // 通常の運用では DB 接続頻度が低いため現状はプールを使い捨てにしている
-            let url  = format!("mysql://{}:{}@{}:{}/{}", user, pass, host, port, db);
+            let url = format!("mysql://{}:{}@{}:{}/{}", user, pass, host, port, db);
             let opts = mysql::Opts::from_url(&url)?;
             let pool = mysql::Pool::new(opts)?;
             let mut conn = pool.get_conn()?;
@@ -385,18 +426,18 @@ pub fn insert_download_record(
             let port = config.database_port.unwrap_or(5432);
             let user = config.database_user.as_deref().unwrap_or("");
             let pass = config.database_password.as_deref().unwrap_or("");
-            let db   = config.database_name.as_deref().unwrap_or("");
+            let db = config.database_name.as_deref().unwrap_or("");
 
             // Tokio ランタイム内で同期 DB 接続を開こうとすると
             // "Cannot start a runtime from within a runtime" panic が発生する。
             // そのため owned の値に変換してから tokio::spawn に渡す。
-            let host     = host.to_string();
-            let user     = user.to_string();
-            let pass     = pass.to_string();
-            let db       = db.to_string();
-            let record_cloned      = record.clone();         // Clone トレイトが必要な理由
-            let auth_info_cloned   = auth_info_str.clone();  // Option<String> は Copy 不可
-            let created_at_cloned  = created_at.clone();
+            let host = host.to_string();
+            let user = user.to_string();
+            let pass = pass.to_string();
+            let db = db.to_string();
+            let record_cloned = record.clone(); // Clone トレイトが必要な理由
+            let auth_info_cloned = auth_info_str.clone(); // Option<String> は Copy 不可
+            let created_at_cloned = created_at.clone();
 
             // バックグラウンドタスクとして Postgres 挿入を実行
             // エラーはタスク内でログに記録する（呼び出し元には伝播しない）
@@ -406,72 +447,98 @@ pub fn insert_download_record(
                     host, port, user, pass, db
                 );
 
-                crate::printdaytimeln!(crate::init::LOG_DEBUG,
-                    "[db] tokio_postgres attempting connect to {}:{}", host, port);
+                crate::printdaytimeln!(
+                    crate::init::LOG_DEBUG,
+                    "[db] tokio_postgres attempting connect to {}:{}",
+                    host,
+                    port
+                );
 
                 match tokio_pg::connect(&connstr, NoTls).await {
                     Ok((client, connection)) => {
                         // connection を別タスクで駆動しないと client 操作がブロックする
                         tokio::spawn(async move {
                             if let Err(e) = connection.await {
-                                crate::printdaytimeln!(crate::init::LOG_INFO,
-                                    "[db] tokio_postgres connection error: {}", e);
+                                crate::printdaytimeln!(
+                                    crate::init::LOG_INFO,
+                                    "[db] tokio_postgres connection error: {}",
+                                    e
+                                );
                             }
                         });
 
                         // Option<String> → Option<&str> に変換する
                         // tokio-postgres の ToSql トレイトは Option<String> を直接受け付けないため
-                        let zip_pw_param: Option<&str>   = record_cloned.zip_password.as_deref();
+                        let zip_pw_param: Option<&str> = record_cloned.zip_password.as_deref();
                         let auth_info_param: Option<&str> = auth_info_cloned.as_deref();
 
                         // デバッグ時のみパラメータ一覧を出力（通常運用では非表示）
-                        crate::printdaytimeln!(crate::init::LOG_DEBUG,
+                        crate::printdaytimeln!(
+                            crate::init::LOG_DEBUG,
                             "[db] tokio_postgres exec params: uuid={}, expires_at={}, \
                              zip_pw_present={}, url={}, auth_mode={}, auth_info_present={}, \
                              expire_hours={}, max_downloads={}, created_at={}",
-                            record_cloned.uuid, record_cloned.expires_at,
-                            zip_pw_param.is_some(), record_cloned.url, record_cloned.auth_mode,
-                            auth_info_param.is_some(), record_cloned.expire_hours,
-                            record_cloned.max_downloads, created_at_cloned);
+                            record_cloned.uuid,
+                            record_cloned.expires_at,
+                            zip_pw_param.is_some(),
+                            record_cloned.url,
+                            record_cloned.auth_mode,
+                            auth_info_param.is_some(),
+                            record_cloned.expire_hours,
+                            record_cloned.max_downloads,
+                            created_at_cloned
+                        );
 
                         // INSERT … ON CONFLICT (uuid) DO UPDATE で UPSERT を実現する
                         // uuid が既存の場合は expires_at だけ上書きする（冪等設計）
                         // i64 を Postgres BIGINT へ渡す際は型が一致しているため ToSql が通る
-                        match client.execute(
-                            "INSERT INTO download_tbl \
+                        match client
+                            .execute(
+                                "INSERT INTO download_tbl \
                              (uuid, download_count, expires_at, zip_password, url, auth_mode, \
                               auth_info, expire_hours, max_downloads, created_at) \
                              VALUES ($1, 0, $2, $3, $4, $5, $6, $7, $8, $9) \
                              ON CONFLICT (uuid) DO UPDATE SET expires_at = EXCLUDED.expires_at",
-                            &[
-                                &record_cloned.uuid,
-                                &record_cloned.expires_at,
-                                &zip_pw_param,          // Option<&str> → NULL or TEXT
-                                &record_cloned.url,
-                                &record_cloned.auth_mode,
-                                &auth_info_param,       // Option<&str> → NULL or TEXT
-                                &record_cloned.expire_hours,  // i64 → BIGINT
-                                &record_cloned.max_downloads, // i64 → BIGINT
-                                &created_at_cloned,
-                            ],
-                        ).await {
+                                &[
+                                    &record_cloned.uuid,
+                                    &record_cloned.expires_at,
+                                    &zip_pw_param, // Option<&str> → NULL or TEXT
+                                    &record_cloned.url,
+                                    &record_cloned.auth_mode,
+                                    &auth_info_param, // Option<&str> → NULL or TEXT
+                                    &record_cloned.expire_hours, // i64 → BIGINT
+                                    &record_cloned.max_downloads, // i64 → BIGINT
+                                    &created_at_cloned,
+                                ],
+                            )
+                            .await
+                        {
                             Ok(rows) => {
                                 // 1 行挿入（または更新）成功
-                                crate::printdaytimeln!(crate::init::LOG_INFO,
+                                crate::printdaytimeln!(
+                                    crate::init::LOG_INFO,
                                     "[db] tokio_postgres insert success: {} rows, uuid={}",
-                                    rows, record_cloned.uuid);
+                                    rows,
+                                    record_cloned.uuid
+                                );
                             }
                             Err(e) => {
                                 // INSERT 失敗（型不一致・制約違反等）
-                                crate::printdaytimeln!(crate::init::LOG_INFO,
-                                    "[db] tokio_postgres execute error: {:?}", e);
+                                crate::printdaytimeln!(
+                                    crate::init::LOG_INFO,
+                                    "[db] tokio_postgres execute error: {:?}",
+                                    e
+                                );
                             }
                         }
                     }
                     Err(e) => {
                         // 接続失敗（認証エラー・DB 未起動等）
-                        crate::printdaytimeln!(crate::init::LOG_INFO,
-                            "[db] tokio_postgres connect error: {}", e);
+                        crate::printdaytimeln!(
+                            crate::init::LOG_INFO,
+                            "[db] tokio_postgres connect error: {}",
+                            e
+                        );
                     }
                 }
             });
