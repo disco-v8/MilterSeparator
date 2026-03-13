@@ -545,3 +545,59 @@ fn build_response_packet(response_code: u8, response_message: &str) -> Vec<u8> {
     packet.extend(bytes); // メッセージ内容
     packet
 }
+
+/// 修正済みメールボディを SMFIR_REPLBODY (0x62) として MTA へ送信する
+///
+/// # 概要
+/// Milter プロトコルの SMFIR_REPLBODY コマンドを使い、メール本文全体を
+/// 指定したバイト列で置き換えるよう MTA に指示する。
+///
+/// ボディは最大 65535 バイト単位のチャンクに分割して送信する。
+/// 全チャンクの送信後に呼び出し元が SMFIR_ACCEPT 等の最終応答を送信すること。
+///
+/// # 引数
+/// - `stream`: MTA への TCP ストリーム
+/// - `body`: 送信する新しいメールボディ全体
+///
+/// # 戻り値
+/// - `Ok(())`: 全チャンク送信成功
+/// - `Err(e)`: 送信失敗（IO エラー等）
+///
+/// # Milter プロトコルの仕様
+/// - SMFIR_REPLBODY = 'b' = 0x62
+/// - パケット形式: 4バイト(サイズ) + 1バイト(0x62) + Nバイト(body chunk)
+/// - CHANGE_BODY アクションが OPTNEG で交渉済みである必要がある
+pub async fn send_replace_body(stream: &mut TcpStream, body: &[u8]) -> tokio::io::Result<()> {
+    // MIME ボディを最大65535バイトのチャンクに分割して送信する
+    // （Milter プロトコルの実装制限に合わせたチャンクサイズ）
+    const CHUNK_SIZE: usize = 65535;
+
+    if body.is_empty() {
+        // 空のボディは送信しない（元のボディを削除する場合は明示的に空の REPLBODY を 1 回送信する）
+        crate::printdaytimeln!(
+            crate::init::LOG_INFO,
+            "[milter] send_replace_body: empty body, skipping REPLBODY"
+        );
+        return Ok(());
+    }
+
+    for chunk in body.chunks(CHUNK_SIZE) {
+        // Milter パケット: 4バイト(サイズ: body+1) + 1バイト(コマンド 0x62) + bodyバイト
+        let cmd_size = (chunk.len() as u32) + 1; // コマンドバイト1バイト分を加算
+        let mut packet = Vec::with_capacity(4 + 1 + chunk.len());
+        packet.extend_from_slice(&cmd_size.to_be_bytes()); // サイズフィールド（ビッグエンディアン）
+        packet.push(0x62u8); // SMFIR_REPLBODY コマンド = 'b'
+        packet.extend_from_slice(chunk); // ボディチャンクデータ
+
+        stream.write_all(&packet).await?;
+    }
+
+    crate::printdaytimeln!(
+        crate::init::LOG_TRACE,
+        "[milter] send_replace_body: sent {} bytes in {} chunk(s)",
+        body.len(),
+        body.len().div_ceil(CHUNK_SIZE)
+    );
+
+    Ok(())
+}

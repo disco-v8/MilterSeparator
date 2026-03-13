@@ -40,6 +40,25 @@ use crate::zipper; // 添付保存ユーティリティ
 use chrono::Local;
 use uuid::Uuid;
 
+// ==========================
+// 機能追加：パース結果構造体
+// ==========================
+
+/// `parse_mail` の戻り値構造体
+///
+/// # フィールド
+/// - `modified_body`: Some(バイト列) の場合はその内容でメール本文を置換する定義。
+///   None の場合はボディの変更は行わない。
+/// - `new_content_type_header`: multipart のバウンダリを変更した場合に Content-Type ヘッダを
+///   別途更新するための値。用いた場合は SMFIR_CHGHEADER で送信する。
+#[allow(dead_code)] // new_content_type_header は将来のバウンダリ変更機能向けに予約
+pub struct ParseResult {
+    /// 変更済みメール本文バイト列（None = ボディ変更なし）
+    pub modified_body: Option<Vec<u8>>,
+    /// 変更埋楓まり Content-Type ヘッダ（None = ヘッダ変更なし）
+    pub new_content_type_header: Option<String>,
+}
+
 /// 不可視文字と制御文字を包括的に除去する関数
 ///
 /// # 引数
@@ -110,14 +129,14 @@ pub fn is_invisible_or_bidi(c: char) -> bool {
 /// 4. パートごとのテキスト/非テキスト判定・出力（デバッグ用）
 /// 5. 添付ファイル名抽出・属性出力（デバッグ用）
 /// 6. NULバイト混入の可視化・除去
-pub fn parse_mail(
+pub async fn parse_mail(
     header_fields: &HashMap<String, Vec<String>>,
     body_field: &str,
     macro_fields: &HashMap<String, String>,
     storage_root: &str,
     remote_ip_target: u8, // 0=外部のみ(ループバック拒否), 1=内部のみ(ループバックのみ許可), 2=全て許可
     config: &crate::init::Config,
-) -> Option<()> {
+) -> Option<ParseResult> {
     // ヘッダ情報とボディ情報を合体し、RFC準拠のメール全体文字列を作成
     let mut mail_string = String::new(); // メール全体の文字列構築用バッファ
 
@@ -344,6 +363,20 @@ pub fn parse_mail(
         crate::printdaytimeln!(LOG_TRACE, "[parser] テキストパート数: {}", text_count); // テキストパート数出力
         crate::printdaytimeln!(LOG_TRACE, "[parser] 非テキストパート数: {}", non_text_count); // 非テキストパート数出力
 
+        // ======================================================================
+        // 機能追加: 最初の text/plain パートのインデックスを特定する
+        //
+        // 設定によりダウンロード情報を先頭・末尾に挿入する対象パートを特定する。
+        // text_indices は multipart/* を除いたテキストパートのインデックス一覧。
+        // その中から最初の text/plain（HTML ではない）を見つける。
+        // ======================================================================
+        let first_plain_part_idx: Option<usize> = text_indices.iter().find(|&&idx| {
+            msg.parts[idx]
+                .content_type()
+                .and_then(|ct| ct.c_subtype.as_deref())
+                .is_some_and(|sub| sub.eq_ignore_ascii_case("plain"))
+        }).copied();
+
         // パートごとの Content-Type を trace レベルで出力（テキスト/非テキスト問わず）
         for (i, part) in msg.parts.iter().enumerate() {
             let ct_hdr = part
@@ -404,8 +437,17 @@ pub fn parse_mail(
         // 文字列バッファ版の保存リスト（ストリーム版）
         let mut attachments_to_save_stream: Vec<(String, Box<dyn IoRead + Send>)> = Vec::new();
 
-        // 非テキストパート情報を出力
-        for part in msg.parts.iter() {
+        // ======================================================================
+        // 機能追加: 添付ファイルに対応する msg.parts インデックスを収集する。
+        //
+        // 設定 Remove_Attachments_From_Body が有効な場合、これらのインデックスに
+        // 対応する MIME パートをボディ再構築時に除外する。
+        // ======================================================================
+        let mut attachment_part_indices: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+
+        // 非テキストパート情報を出力（enumerate で global index も追跡）
+        for (global_idx, part) in msg.parts.iter().enumerate() {
             if !part.is_text() {
                 // Content-Type取得（MIMEタイプ情報）
                 let ct = part
@@ -610,6 +652,9 @@ pub fn parse_mail(
                     // b は &[u8] 相当なので一旦 Vec に複製して Cursor でラップ
                     let boxed: Box<dyn IoRead + Send> = Box::new(Cursor::new(b.to_vec()));
                     attachments_to_save_stream.push((fname.clone(), boxed));
+                    // 機能1: 添付ファイルの msg.parts インデックスを記録
+                    // Remove_Attachments_From_Body が有効な場合に MIME ボディ再構築で除外する
+                    attachment_part_indices.insert(global_idx);
                 }
 
                 non_text_idx += 1; // インデックスを次へ
@@ -617,6 +662,14 @@ pub fn parse_mail(
         }
 
         // 添付があれば storage_path/<QueueID>/ に保存する（まずは保存のみ）
+        // ======================================================================
+        // 機能1〜3: ボディ変更処理の結果を格納する変数（添付処理ブロック外で宣言）
+        // None の場合は SMFIR_REPLBODY を送信しない（元のボディを変更しない）。
+        // ======================================================================
+        let mut modified_body_result: Option<Vec<u8>> = None;
+        // Content-Type ヘッダ更新用（現バージョンでは同一 boundary を維持するため未使用）
+        let new_content_type_result: Option<String> = None;
+
         if !attachments_to_save_stream.is_empty() {
             // 添付ファイルの件数とファイル名一覧をログ出力（要約は INFO、詳細は TRACE）
             let attach_names: Vec<String> = attachments_to_save_stream
@@ -842,12 +895,23 @@ $stmt->execute([$uuid]);
                         max_downloads: config.max_downloads as i64,
                     };
 
-                    if let Err(e) = db::insert_download_record(config, &record) {
-                        crate::printdaytimeln!(
-                            LOG_DEBUG,
-                            "[parser] insert_download_record error: {}",
-                            e
-                        );
+                    // DB にレコードを挿入する（tokio::spawn でバックグラウンドタスクとして実行）
+                    // 理由: save_attachments_stream の match 内で .await すると
+                    //   Box<dyn StdError>（non-Send）が await 点を跨いで
+                    //   Future が Send にならないため、tokio::spawn で
+                    //   同期 コンテキスト外に履行する。
+                    {
+                        let config_for_db = config.clone();
+                        let record_for_db = record.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = db::insert_download_record(&config_for_db, &record_for_db).await {
+                                crate::printdaytimeln!(
+                                    crate::init::LOG_DEBUG,
+                                    "[parser] insert_download_record error: {}",
+                                    e
+                                );
+                            }
+                        });
                     }
 
                     // ZIP作成を試みる（親ディレクトリに作成してから UUID ディレクトリへ移動）
@@ -1012,6 +1076,103 @@ $stmt->execute([$uuid]);
                             }
                         }
                     }
+
+                    // ===========================================================
+                    // 機能1〜3: MIME ボディの変更処理
+                    // Remove_Attachments_From_Body / Insert_Download_Info_* /
+                    // Add_Download_Info_As_New_Text_Part のいずれかが有効で、
+                    // かつ添付ファイルが存在する場合にボディを再構築する。
+                    //
+                    // 再構築に成功した場合、modified_body_result に新ボディを格納し、
+                    // 呼び出し元 (client.rs) が SMFIR_REPLBODY で MTA へ送信する。
+                    // ===========================================================
+                    let needs_modification = config.remove_attachments_from_body
+                        || config.insert_download_info_head
+                        || config.insert_download_info_tail
+                        || config.add_download_info_as_new_text_part;
+
+                    if needs_modification {
+                        // テンプレート変数のマッピング（全テンプレートで共通）
+                        let first_fname =
+                            attach_names.first().map(String::as_str).unwrap_or("");
+                        let expire_hours_str = config.expire_hours.to_string();
+                        let mut tpl_vars = std::collections::HashMap::new();
+                        tpl_vars.insert("filename", first_fname);
+                        tpl_vars.insert("download_url", download_url.as_str());
+                        tpl_vars.insert("zip_password", pw.as_str());
+                        tpl_vars.insert("expire_hours", expire_hours_str.as_str());
+                        tpl_vars.insert("uuid", queue_id.as_str());
+                        tpl_vars.insert("expires_at", expires_at.as_str());
+
+                        // 機能2ヘッド: 先頭挿入テンプレートをロード・展開
+                        let head_text = if config.insert_download_info_head {
+                            load_and_expand_template(
+                                "/etc/MilterSeparator.d/templates/DownloadInfoHeadTemplate.txt",
+                                &tpl_vars,
+                            )
+                        } else {
+                            None
+                        };
+
+                        // 機能2テイル: 末尾挿入テンプレートをロード・展開
+                        let tail_text = if config.insert_download_info_tail {
+                            load_and_expand_template(
+                                "/etc/MilterSeparator.d/templates/DownloadInfoTailTemplate.txt",
+                                &tpl_vars,
+                            )
+                        } else {
+                            None
+                        };
+
+                        // 機能3: 新規テキストパートテンプレートをロード・展開
+                        let new_text_part = if config.add_download_info_as_new_text_part {
+                            load_and_expand_template(
+                                "/etc/MilterSeparator.d/templates/DownloadInfoTextTemplate.txt",
+                                &tpl_vars,
+                            )
+                        } else {
+                            None
+                        };
+
+                        // 機能1〜3の設定が有効な場合のみ空の HashSet を渡す
+                        let empty_set = std::collections::HashSet::new();
+                        let remove_indices = if config.remove_attachments_from_body {
+                            &attachment_part_indices
+                        } else {
+                            &empty_set
+                        };
+
+                        // MIME ボディを再構築する
+                        match build_modified_mime_body(
+                            &msg,
+                            mail_string.as_bytes(),
+                            remove_indices,
+                            first_plain_part_idx,
+                            head_text.as_deref(),
+                            tail_text.as_deref(),
+                            new_text_part.as_deref(),
+                        ) {
+                            Some(new_body) => {
+                                crate::printdaytimeln!(
+                                    LOG_INFO,
+                                    "[parser] rebuilt MIME body: {} bytes (original body: {} bytes)",
+                                    new_body.len(),
+                                    body_field.len()
+                                );
+                                modified_body_result = Some(new_body);
+
+                                // マルチパートの境界が変わる場合：Content-Type ヘッダも更新する
+                                // 現在は同じ境界を使うため更新不要（将来の拡張ポイント）
+                            }
+                            None => {
+                                crate::printdaytimeln!(
+                                    LOG_INFO,
+                                    "[parser] MIME body rebuild skipped: message is non-multipart \
+                                     or boundary not found"
+                                );
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     crate::printdaytimeln!(
@@ -1024,9 +1185,247 @@ $stmt->execute([$uuid]);
         }
 
         // パース処理完了
-        return Some(());
+        // modified_body_result に値がある場合は SMFIR_REPLBODY で MTA へ送信される。
+        return Some(ParseResult {
+            modified_body: modified_body_result,
+            new_content_type_header: new_content_type_result,
+        });
     }
 
     // パース失敗時はNoneを返す
     None // パース失敗：Noneを返却
+}
+// =============================================================================
+// ヘルパー関数群
+// =============================================================================
+
+/// テンプレートファイルを読み込み、`{{varname}}` プレースホルダーを展開して返す
+///
+/// # 引数
+/// - `path`: テンプレートファイルのパス（UTF-8 テキスト）
+/// - `vars`: プレースホルダー名 → 展開後文字列のマッピング
+///
+/// # 戻り値
+/// - `Some(String)`: 展開済みテキスト
+/// - `None`: ファイルが存在しない / 読み込み失敗（ログなしで静かに失敗）
+///
+/// # 説明
+/// `{{filename}}`, `{{download_url}}` 等のプレースホルダーを
+/// `vars` に指定された値で置換する。ファイルが存在しない場合は警告を出力する。
+fn load_and_expand_template(
+    path: &str,
+    vars: &std::collections::HashMap<&str, &str>,
+) -> Option<String> {
+    // テンプレートファイルを UTF-8 として読み込む
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            // テンプレートファイルが見つからない場合は情報レベルで警告
+            crate::printdaytimeln!(
+                crate::init::LOG_INFO,
+                "[parse] template file not found: {} ({})",
+                path,
+                e
+            );
+            return None;
+        }
+    };
+
+    // `{{varname}}` 形式のプレースホルダーをすべて置換する
+    let mut result = content;
+    for (key, value) in vars {
+        // `{{key}}` → `value` の単純文字列置換（正規表現不使用でシンプルに保つ）
+        let placeholder = format!("{{{{{}}}}}", key); // 例: "{{filename}}"
+        result = result.replace(&placeholder, value);
+    }
+
+    crate::printdaytimeln!(
+        crate::init::LOG_TRACE,
+        "[parse] template expanded: {} ({} bytes)",
+        path,
+        result.len()
+    );
+
+    Some(result)
+}
+
+/// MIME マルチパートボディを再構築する関数
+///
+/// # 概要
+/// mail_parser で解析済みのメッセージ構造と元の生バイトを使い、
+/// 添付ファイルの除去・text/plain 先頭/末尾への情報挿入・
+/// 新規 text/plain パートの追加を行い、SMFIR_REPLBODY 用のバイト列を返す。
+///
+/// # 引数
+/// - `msg`: mail_parser で解析済みのメッセージ
+/// - `mail_bytes`: 元のメールの生バイト（ヘッダ + ボディ）
+/// - `remove_indices`: msg.parts インデックスのうち除外する添付パートのセット
+/// - `first_plain_idx`: head/tail を挿入する最初の text/plain パートのインデックス
+/// - `head_text`: 先頭に挿入するテキスト（None の場合は挿入しない）
+/// - `tail_text`: 末尾に挿入するテキスト（None の場合は挿入しない）
+/// - `new_text_part`: 新規テキストパートとして追加するテキスト（None の場合は追加しない）
+///
+/// # 戻り値
+/// - `Some(Vec<u8>)`: 再構築済みの MIME ボディバイト列（SMFIR_REPLBODY で送信する内容）
+/// - `None`: ルートがマルチパートでない / バウンダリが取得できない場合（変更不要）
+///
+/// # 設計上の注意
+/// - 変更しないパートは元のバイト列（mail_bytes を offset で切り出し）をそのまま使用する。
+///   これにより base64/QP 等のエンコードを再変換せず副作用リスクを最小化している。
+/// - 変更対象の text/plain パートは mail_parser がデコードした文字列を使用し、
+///   Content-Type: text/plain; charset=UTF-8 / CTE: 8bit に統一して書き直す。
+/// - ネストされたマルチパートは分解せずそのまま保持する（変更しないパート扱い）。
+fn build_modified_mime_body(
+    msg: &mail_parser::Message,
+    mail_bytes: &[u8],
+    remove_indices: &std::collections::HashSet<usize>,
+    first_plain_idx: Option<usize>,
+    head_text: Option<&str>,
+    tail_text: Option<&str>,
+    new_text_part: Option<&str>,
+) -> Option<Vec<u8>> {
+    use mail_parser::PartType;
+
+    // ルートパートの Content-Type が multipart/*（mixed, alternative 等）であることを確認
+    let root_part = msg.parts.first()?;
+    let boundary = root_part
+        .content_type()
+        .filter(|ct| ct.c_type.eq_ignore_ascii_case("multipart"))
+        .and_then(|ct| ct.attributes())
+        .and_then(|attrs| {
+            attrs
+                .iter()
+                .find(|a| a.name.eq_ignore_ascii_case("boundary"))
+                .map(|a| { let v: &str = &a.value; v.to_owned() })
+        })?;
+
+    // ルートパートの直接の子パート一覧を取得
+    let children = match &root_part.body {
+        PartType::Multipart(ch) => ch,
+        _ => return None, // シングルパートは再構築対象外
+    };
+
+    crate::printdaytimeln!(
+        crate::init::LOG_TRACE,
+        "[parse] MIME rebuild: boundary={}, children={}, remove_count={}, \
+         first_plain={:?}, has_head={}, has_tail={}, has_new_part={}",
+        boundary,
+        children.len(),
+        remove_indices.len(),
+        first_plain_idx,
+        head_text.is_some(),
+        tail_text.is_some(),
+        new_text_part.is_some()
+    );
+
+    let mut output: Vec<u8> = Vec::new();
+    let mut is_first_part = true;
+
+    for &child_idx in children.iter() {
+        let part = &msg.parts[child_idx as usize];
+
+        // --- 削除対象のパートはスキップ（機能1: 添付ファイルの除去）---
+        if remove_indices.contains(&(child_idx as usize)) {
+            crate::printdaytimeln!(
+                crate::init::LOG_TRACE,
+                "[parse] MIME rebuild: removing part idx={}",
+                child_idx
+            );
+            continue;
+        }
+
+        // --- パート区切り: 最初以外は CRLF を先行させる（RFC 2046 の transport padding）---
+        if !is_first_part {
+            output.extend_from_slice(b"\r\n");
+        }
+        // バウンダリ行を書き出す
+        output.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+        is_first_part = false;
+
+        if first_plain_idx == Some(child_idx as usize) {
+            // === 機能2: 最初の text/plain パートにダウンロード情報を挿入 ===
+            // mail_parser がデコードした文字列を取得し、head/tail を付加して書き直す。
+            // 元のエンコードに関わらず Content-Transfer-Encoding: 8bit / UTF-8 で統一する。
+            let decoded_text = match &part.body {
+                PartType::Text(t) => { let s: &str = t; s.to_owned() },
+                PartType::Html(t) => { let s: &str = t; s.to_owned() },
+                _ => String::new(),
+            };
+
+            // 先頭テキスト + 元の本文 + 末尾テキストを組み立てる
+            let mut new_body_text = String::new();
+            if let Some(head) = head_text {
+                new_body_text.push_str(head);
+                new_body_text.push_str("\r\n\r\n"); // 区切りの空行
+            }
+            new_body_text.push_str(&decoded_text);
+            if let Some(tail) = tail_text {
+                new_body_text.push_str("\r\n\r\n"); // 区切りの空行
+                new_body_text.push_str(tail);
+            }
+
+            // ヘッダを再構築（charset を UTF-8 / CTE を 8bit に統一）
+            output.extend_from_slice(b"Content-Type: text/plain; charset=UTF-8\r\n");
+            output.extend_from_slice(b"Content-Transfer-Encoding: 8bit\r\n");
+            output.extend_from_slice(b"\r\n"); // ヘッダ/ボディ区切り空行
+            output.extend_from_slice(new_body_text.as_bytes());
+
+            crate::printdaytimeln!(
+                crate::init::LOG_TRACE,
+                "[parse] MIME rebuild: modified text/plain part idx={}, new size={} bytes",
+                child_idx,
+                new_body_text.len()
+            );
+        } else {
+            // === 変更しないパート: 元のバイト列をそのまま転写 ===
+            // mail_parser が保持するオフセット情報を利用して
+            // 元のメール生バイトから該当範囲を切り出す。
+            // これにより base64 / quoted-printable 等のエンコードを再変換せず保持できる。
+            let start = part.offset_header as usize;
+            let end = (part.offset_end as usize).min(mail_bytes.len());
+            if start < end {
+                output.extend_from_slice(&mail_bytes[start..end]);
+            } else {
+                crate::printdaytimeln!(
+                    crate::init::LOG_INFO,
+                    "[parse] MIME rebuild: invalid offset for part idx={} (start={}, end={})",
+                    child_idx,
+                    start,
+                    end
+                );
+            }
+        }
+    }
+
+    // === 機能3: 新規 text/plain パートとしてダウンロード情報を追加 ===
+    if let Some(content) = new_text_part {
+        if !is_first_part {
+            output.extend_from_slice(b"\r\n");
+        }
+        output.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+        output.extend_from_slice(b"Content-Type: text/plain; charset=UTF-8\r\n");
+        output.extend_from_slice(b"Content-Transfer-Encoding: 8bit\r\n");
+        output.extend_from_slice(b"Content-Disposition: inline\r\n");
+        output.extend_from_slice(b"\r\n"); // ヘッダ/ボディ区切り空行
+        output.extend_from_slice(content.as_bytes());
+
+        crate::printdaytimeln!(
+            crate::init::LOG_TRACE,
+            "[parse] MIME rebuild: added new text/plain part ({} bytes)",
+            content.len()
+        );
+    }
+
+    // === マルチパート終端バウンダリ ===
+    output.extend_from_slice(b"\r\n");
+    output.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+
+    crate::printdaytimeln!(
+        crate::init::LOG_INFO,
+        "[parse] MIME body rebuilt successfully: {} bytes (boundary={})",
+        output.len(),
+        boundary
+    );
+
+    Some(output)
 }

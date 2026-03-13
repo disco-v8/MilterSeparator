@@ -15,6 +15,7 @@ The email body is rewritten with a download URL, password, and expiry notice bef
 - **Download management** — Configurable max download count and expiry period
 - **Authentication modes** — minimal / token / basic
 - **Multi-database support** — SQLite3 / MySQL / PostgreSQL, switchable via config
+- **Automatic mail body rewriting** — Remove attachment parts, insert download info, or add a new text part (body replacement via SMFIR_REPLBODY)
 - **Zero-downtime reload via SIGHUP** — Reload configuration without stopping the service
 - **systemd service support**
 - **logrotate configuration included**
@@ -61,6 +62,14 @@ sudo install -m 644 etc/MilterSeparator.d/templates/counter_template.cgi \
     /etc/MilterSeparator.d/templates/counter_template.cgi
 sudo install -m 644 etc/MilterSeparator.d/templates/download_template.html \
     /etc/MilterSeparator.d/templates/download_template.html
+
+# Install mail body rewriting templates
+sudo install -m 644 etc/MilterSeparator.d/templates/DownloadInfoHeadTemplate.txt \
+    /etc/MilterSeparator.d/templates/DownloadInfoHeadTemplate.txt
+sudo install -m 644 etc/MilterSeparator.d/templates/DownloadInfoTailTemplate.txt \
+    /etc/MilterSeparator.d/templates/DownloadInfoTailTemplate.txt
+sudo install -m 644 etc/MilterSeparator.d/templates/DownloadInfoTextTemplate.txt \
+    /etc/MilterSeparator.d/templates/DownloadInfoTextTemplate.txt
 
 # Install and enable systemd unit
 sudo install -m 644 systemd/milter_separator.service \
@@ -111,6 +120,10 @@ Configuration is managed in two levels.
 | `storage_path` | Root directory for storing attachment files | `/var/lib/milterseparator` |
 | `base_url` | Base URL for download links | — |
 | `counter_cgi` | Filename of the counter script | `count.cgi` |
+| `Remove_Attachments_From_Body` | Remove attachment parts from the mail body (`yes` / `no`) | `no` |
+| `Insert_Download_Info_Position_head` | Insert download info at the **beginning** of the first text/plain part (`yes` / `no`) | `no` |
+| `Insert_Download_Info_Position_tail` | Insert download info at the **end** of the first text/plain part (`yes` / `no`) | `no` |
+| `Add_Download_Info_As_New_Text_Part` | Append download info as a **new text/plain part** at the end of multipart (`yes` / `no`) | `no` |
 
 #### 2.2. templates/ (Templates)
 
@@ -121,6 +134,28 @@ Placeholders (e.g. `{{db_type}}`) are replaced with actual configuration values 
 |------|-------------|
 | `counter_template.cgi` | Download counter (PHP script). Increments `download_count` in `download_tbl` on each file access. Supports SQLite / MySQL / PostgreSQL via PDO. The filename must match the `counter_cgi` setting (default: `count.cgi`). |
 | `download_template.html` | HTML template for the download page. Responsive card-style UI displaying filename, password, expiry date, and a download button. Placeholders are replaced with the actual UUID, URL, password, etc. and placed in each UUID directory. |
+
+#### 2.3. templates/ additions (Mail body rewriting templates)
+
+Text templates referenced when `Remove_Attachments_From_Body`, `Insert_Download_Info_Position_*`,  
+or `Add_Download_Info_As_New_Text_Part` are enabled. (Placed in the same `templates/` directory as 2.2.)
+
+Available placeholders:
+
+| Placeholder | Expanded value |
+|-------------|---------------|
+| `{{filename}}` | First attachment filename |
+| `{{download_url}}` | Download URL |
+| `{{zip_password}}` | ZIP password |
+| `{{expire_hours}}` | Expiry period (hours) |
+| `{{uuid}}` | UUID |
+| `{{expires_at}}` | Expiry date/time string |
+
+| File | Description |
+|------|-------------|
+| `DownloadInfoHeadTemplate.txt` | Text inserted at the **beginning** of the first text/plain part when `Insert_Download_Info_Position_head yes`. |
+| `DownloadInfoTailTemplate.txt` | Text inserted at the **end** of the first text/plain part when `Insert_Download_Info_Position_tail yes`. |
+| `DownloadInfoTextTemplate.txt` | Text appended as a **new text/plain part** at the end of the multipart when `Add_Download_Info_As_New_Text_Part yes`. Existing parts are not modified. |
 
 ---
 
@@ -252,9 +287,15 @@ MilterSeparator/
 │   └── MilterSeparator.d/
 │       ├── Parameter.conf            # Feature configuration
 │       ├── Parameter.conf.sample     # Configuration sample
+│       ├── templates/
+│       │   ├── counter_template.cgi  # Counter CGI template
+│       │   └── download_template.html# Download page template
 │       └── templates/
 │           ├── counter_template.cgi  # Counter CGI template
-│           └── download_template.html# Download page template
+│           ├── download_template.html# Download page template
+│           ├── DownloadInfoHeadTemplate.txt  # Body head-insert template
+│           ├── DownloadInfoTailTemplate.txt  # Body tail-insert template
+│           └── DownloadInfoTextTemplate.txt  # New text-part template
 ├── systemd/
 │   └── milter_separator.service      # systemd unit file
 ├── logrotate.d/

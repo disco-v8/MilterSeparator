@@ -17,6 +17,7 @@ Postfix / Sendmail の Milter (Mail Filter) インターフェース上で動作
 - **ダウンロード管理** — 最大回数・有効期限を設定可能
 - **認証方式の選択** — minimal / token / basic の 3 モード
 - **マルチ DB 対応** — SQLite3 / MySQL / PostgreSQL を設定で切替
+- **メール本文の自動書き換え** — 添付パートの削除・ダウンロード情報の挿入・新規テキストパートの追加（SMFIR_REPLBODY によるボディ置換）
 - **SIGHUP によるノーダウンリロード** — サービス停止なしに設定を再読込
 - **systemd サービス対応**
 - **logrotate 設定同梱**
@@ -63,6 +64,14 @@ sudo install -m 644 etc/MilterSeparator.d/templates/counter_template.cgi \
     /etc/MilterSeparator.d/templates/counter_template.cgi
 sudo install -m 644 etc/MilterSeparator.d/templates/download_template.html \
     /etc/MilterSeparator.d/templates/download_template.html
+
+# メール本文書き換え用テンプレートを配置
+sudo install -m 644 etc/MilterSeparator.d/templates/DownloadInfoHeadTemplate.txt \
+    /etc/MilterSeparator.d/templates/DownloadInfoHeadTemplate.txt
+sudo install -m 644 etc/MilterSeparator.d/templates/DownloadInfoTailTemplate.txt \
+    /etc/MilterSeparator.d/templates/DownloadInfoTailTemplate.txt
+sudo install -m 644 etc/MilterSeparator.d/templates/DownloadInfoTextTemplate.txt \
+    /etc/MilterSeparator.d/templates/DownloadInfoTextTemplate.txt
 
 # systemd ユニットを配置して有効化
 sudo install -m 644 systemd/milter_separator.service \
@@ -112,6 +121,10 @@ sudo install -m 644 logrotate.d/milter_separator \
 | `storage_path` | 添付ファイル保存先ルートディレクトリ | `/var/lib/milterseparator` |
 | `base_url` | ダウンロード URL のベース | — |
 | `counter_cgi` | カウンタスクリプトのファイル名 | `count.cgi` |
+| `Remove_Attachments_From_Body` | 添付パートをメール本文から削除する（`yes` / `no`） | `no` |
+| `Insert_Download_Info_Position_head` | 最初の text/plain パート先頭にダウンロード情報を挿入する（`yes` / `no`） | `no` |
+| `Insert_Download_Info_Position_tail` | 最初の text/plain パート末尾にダウンロード情報を挿入する（`yes` / `no`） | `no` |
+| `Add_Download_Info_As_New_Text_Part` | 新規 text/plain パートとしてダウンロード情報を追加する（`yes` / `no`） | `no` |
 
 ### 2.2. templates/（テンプレート）
 
@@ -122,6 +135,28 @@ sudo install -m 644 logrotate.d/milter_separator \
 |----------|------|
 | `counter_template.cgi` | ダウンロード回数カウンタ（PHP スクリプト）。ファイルが取得されるたびに `download_tbl` の `download_count` をインクリメントする。SQLite / MySQL / PostgreSQL に対応し、PDO 経由で DB へ接続する。ファイル名は `counter_cgi` 設定値に合わせる（デフォルト: `count.cgi`）。 |
 | `download_template.html` | ダウンロードページの HTML テンプレート。レスポンシブデザインのカード型 UI で、ファイル名・パスワード・有効期限・ダウンロードボタンを表示する。プレースホルダーが UUID・URL・パスワード等の実際の値に置換されて各 UUID ディレクトリに配置される。 |
+
+### 2.3. templates/ 追加分（メール本文書き換えテンプレート）
+
+`Remove_Attachments_From_Body` / `Insert_Download_Info_Position_*` / `Add_Download_Info_As_New_Text_Part`
+を有効にした場合に参照されるテキストテンプレートです（2.2 と同じ `templates/` ディレクトリ内に配置）。
+
+以下のプレースホルダーを使用できます。
+
+| プレースホルダー | 展開値 |
+|-----------------|--------|
+| `{{filename}}` | 最初の添付ファイル名 |
+| `{{download_url}}` | ダウンロード URL |
+| `{{zip_password}}` | ZIP パスワード |
+| `{{expire_hours}}` | 有効期限（時間数） |
+| `{{uuid}}` | UUID |
+| `{{expires_at}}` | 有効期限（日時文字列） |
+
+| ファイル | 説明 |
+|----------|------|
+| `DownloadInfoHeadTemplate.txt` | `Insert_Download_Info_Position_head yes` 時に最初の text/plain パートの**先頭**に挿入されるテキスト。 |
+| `DownloadInfoTailTemplate.txt` | `Insert_Download_Info_Position_tail yes` 時に最初の text/plain パートの**末尾**に挿入されるテキスト。 |
+| `DownloadInfoTextTemplate.txt` | `Add_Download_Info_As_New_Text_Part yes` 時に既存パートに手を加えず、マルチパートの末尾に**新規 text/plain パート**として追加されるテキスト。 |
 
 ---
 
@@ -253,9 +288,15 @@ MilterSeparator/
 │   └── MilterSeparator.d/
 │       ├── Parameter.conf            # 機能設定
 │       ├── Parameter.conf.sample     # 設定サンプル
+│       ├── templates/
+│       │   ├── counter_template.cgi  # カウンタ CGI テンプレート
+│       │   └── download_template.html# ダウンロードページテンプレート
 │       └── templates/
 │           ├── counter_template.cgi  # カウンタ CGI テンプレート
-│           └── download_template.html# ダウンロードページテンプレート
+│           ├── download_template.html# ダウンロードページテンプレート
+│           ├── DownloadInfoHeadTemplate.txt  # 本文先頭挿入テンプレート
+│           ├── DownloadInfoTailTemplate.txt  # 本文末尾挿入テンプレート
+│           └── DownloadInfoTextTemplate.txt  # 新規テキストパートテンプレート
 ├── systemd/
 │   └── milter_separator.service      # systemd ユニットファイル
 ├── logrotate.d/

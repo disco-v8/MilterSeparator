@@ -1,12 +1,14 @@
 # =============================================================================
-# Parameter.conf.sample - MilterSeparator パラメータ設定ファイル（サンプル）
+# Parameter.conf - MilterSeparator パラメータ設定ファイル（フラグ付きサンプル）
 #
 # このファイルはオプションパラメータの説明とサンプル値を示します。
 # 実際に有効にするには、コメント行（先頭の '# '）を削除して値を調整してください。
 #
-# 形式: キー	値
+# 形式: キー<tab>値
 #       値の型はコメントで示します。
 #
+# =============================================================================
+# パスワード関連
 # =============================================================================
 # パスワード強度ポリシー
 #  - low:    最低限の強度（アルファベットと数字で8文字以上）
@@ -14,9 +16,9 @@
 #  - high:   高度な強度（大文字・小文字・数字・記号を含む16文字以上）
 password_strength	medium
 
-# ---------------------------------------------
+# =============================================================================
 # ダウンロード関連
-# ---------------------------------------------
+# =============================================================================
 # max_downloads    : 数値（1以上）
 #                   ダウンロード可能な最大回数の上限。
 #                   例: 100
@@ -53,35 +55,9 @@ basic_auth_password	download
 token_auth_key	this_is_a_secret_key_change_me
 token_auth_type	hmac-sha256
 
-# ---------------------------------------------
-# 削除・バックグラウンド処理
-# ---------------------------------------------
-# delete_mode      : 列挙値("delete" | "script")
-#                   自動削除の方法。"delete" は単純削除、"script" はカスタムスクリプト実行。
-delete_mode	delete
-
-# delete_script_path: 文字列（スクリプトのフルパス）
-#                   delete_mode が "script" の場合に実行されるスクリプトパス。
-# delete_script_path	/usr/local/bin/milterseparator_delete.sh
-
-# ---------------------------------------------
-# ストレージ / URL
-# ---------------------------------------------
-# storage_path     : 文字列（ディレクトリパス）
-#                   添付ファイルや一時ファイルの保存先。
-storage_path	/var/lib/milterseparator
-
-# base_url         : 文字列（URL）
-#                   外部参照用のベースURL（ダウンロードリンク生成など）。
-base_url	https://alma9.fwnet.jp/MilterSeparator
-
-# counter_cgi     : 文字列（ファイル名）
-#                   各 UUID ディレクトリに生成されるカウンタ CGI のファイル名。
-#                   PHP-FPM で動かす場合は .php 拡張子にする必要がある環境がある。
-#                   デフォルト: count.cgi
-####counter_cgi	count.cgi
-counter_cgi	count.php
-
+# =============================================================================
+# データベース関連
+# =============================================================================
 # ---------------------------------------------
 # データベース / Database
 # ---------------------------------------------
@@ -117,6 +93,94 @@ Database_Path	/var/lib/milterseparator/db.sqlite3
 ####Database_User	milter
 ####Database_Password	strongpassword
 ####Database_Name	milter_separator
+
+# =============================================================================
+# その他の設定
+# =============================================================================
+# ---------------------------------------------
+# 削除・バックグラウンド処理
+# ---------------------------------------------
+# delete_mode      : 列挙値("delete" | "script")
+#                   自動削除の方法。"delete" は単純削除、"script" はカスタムスクリプト実行。
+delete_mode delete
+
+# delete_script_path: 文字列（スクリプトのフルパス）
+#                   delete_mode が "script" の場合に実行されるスクリプトパス。
+# delete_script_path	/usr/local/bin/milterseparator_delete.sh
+
+# ---------------------------------------------
+# ストレージ / URL
+# ---------------------------------------------
+# storage_path     : 文字列（ディレクトリパス）
+#                   添付ファイルや一時ファイルの保存先。
+storage_path	/var/lib/milterseparator
+
+# base_url         : 文字列（URL）
+#                   外部参照用のベースURL（ダウンロードリンク生成など）。
+base_url	https://alma9.fwnet.jp/MilterSeparator
+
+# counter_cgi     : 文字列（ファイル名）
+#                   各 UUID ディレクトリに生成されるカウンタ CGI のファイル名。
+#                   PHP-FPM で動かす場合は .php 拡張子にする必要がある環境がある。
+#                   デフォルト: count.cgi
+####counter_cgi	count.cgi
+counter_cgi	count.php
+
+# =============================================================================
+# メールボディ関連
+# =============================================================================
+# ---------------------------------------------
+# 機能1: 添付ファイルをメールボディから削除する
+# ---------------------------------------------
+# Remove_Attachments_From_Body:
+#   yes を指定すると、ZIP 保存後に添付ファイルパートを
+#   元のメール本文から除去して MTA へ差し戻します（SMFIR_REPLBODY を使用）。
+#   受信者のメールクライアントには添付ファイルが見えなくなります。
+#
+Remove_Attachments_From_Body	no
+
+# ---------------------------------------------
+# 機能2: 最初の text/plain パートにダウンロード情報を挿入する
+# ---------------------------------------------
+# Insert_Download_Info_Position_head:
+#   yes を指定すると、最初の text/plain パート「先頭」に
+#   DownloadInfoHeadTemplate.txt の内容を挿入します。
+#
+Insert_Download_Info_Position_head	no
+
+# Insert_Download_Info_Position_tail:
+#   yes を指定すると、最初の text/plain パート「末尾」に
+#   DownloadInfoTailTemplate.txt の内容を追加します。
+#   Insert_Download_Info_Position_head と組み合わせて両方 yes にすることも可能です。
+#
+Insert_Download_Info_Position_tail	no
+
+# ---------------------------------------------
+# 機能3: 新規 text/plain パートとしてダウンロード情報を追加する
+# ---------------------------------------------
+# Add_Download_Info_As_New_Text_Part:
+#   yes を指定すると、既存テキストパートは変更せず、
+#   DownloadInfoTextTemplate.txt の内容を新規 text/plain パートとして
+#   マルチパートメールの末尾に追加します。
+#
+Add_Download_Info_As_New_Text_Part	no
+
+# ---------------------------------------------
+# テンプレートファイルの場所
+# ---------------------------------------------
+# テンプレートは /etc/MilterSeparator.d/templates/ 以下に配置します。
+# 以下のプレースホルダーが利用できます:
+#   {{filename}}     - 最初の添付ファイル名
+#   {{download_url}} - ダウンロード URL
+#   {{zip_password}} - ZIP パスワード
+#   {{expire_hours}} - 有効期限（時間）
+#   {{uuid}}         - UUID
+#   {{expires_at}}   - 有効期限（日時文字列）
+#
+# テンプレートファイル:
+#   /etc/MilterSeparator.d/templates/DownloadInfoHeadTemplate.txt  (機能2 先頭挿入)
+#   /etc/MilterSeparator.d/templates/DownloadInfoTailTemplate.txt  (機能2 末尾挿入)
+#   /etc/MilterSeparator.d/templates/DownloadInfoTextTemplate.txt  (機能3 新規パート)
 
 # =============================================================================
 # 備考

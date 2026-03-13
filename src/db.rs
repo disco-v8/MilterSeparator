@@ -329,27 +329,30 @@ pub async fn init_db(config: &Config) -> Result<(), Box<dyn std::error::Error + 
     Ok(())
 }
 
-/// ダウンロードレコードを DB へ挿入する関数
+/// ダウンロードレコードを DB へ挿入する非同期関数
 ///
 /// # 概要
 /// 設定で指定された DB 種別に応じて `download_tbl` に 1 件レコードを挿入する。
 /// uuid が既存の場合は `expires_at` のみ更新（UPSERT）することで冪等性を保つ。
 ///
-/// Postgres の場合のみ、Tokio ランタイム内で同期ブロッキング接続を開けない制約があるため
-/// `tokio::spawn` でバックグラウンドタスクとして非同期実行する。
-/// そのためエラーはタスク内でログに記録し、呼び出し元には伝播しない。
+/// ## DB 種別ごとの非同期化方針
+/// - SQLite: `tokio::task::spawn_blocking` で別スレッドにオフロード。
+///   rusqlite は同期クレートであり Tokio ワーカー上で直接ブロックするとスレッドを占有するため。
+/// - MySQL: 同じく `tokio::task::spawn_blocking` でオフロード。
+/// - Postgres: `tokio::spawn` でバックグラウンドタスクとして非同期実行。
+///   エラーはタスク内でログに記録し、呼び出し元には伝播しない（fire-and-forget）。
 ///
 /// # 引数
 /// - `config`: MilterSeparator 設定情報（DB 接続情報を含む）
 /// - `record`: 挿入するダウンロードレコード情報
 ///
 /// # 戻り値
-/// - `Ok(())`: 挿入成功（Postgres の場合はタスク投入が成功した時点で Ok を返す）
-/// - `Err(...)`: SQLite / MySQL の挿入失敗（Postgres タスク内のエラーは Err にならない）
-pub fn insert_download_record(
+/// - `Ok(())`: 投入成功（Postgres / SQLite の spawn 後エラーはログのみで伝播しない）
+/// - `Err(...)`: spawn_blocking の join エラー等、呼び出し自体が失敗した場合のみ
+pub async fn insert_download_record(
     config: &Config,
     record: &DownloadRecord,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // auth_info（JSON Value）を文字列に変換して DB の TEXT カラムに保存できる形にする
     let auth_info_str = record.auth_info.as_ref().map(|v| v.to_string());
     // レコード作成日時を JST で取得（DB の TEXT カラムに "YYYY-MM-DD HH:MM:SS +09:00" 形式で保存）
@@ -359,64 +362,92 @@ pub fn insert_download_record(
         // ===== SQLite =====
         "sqlite" => {
             if let Some(path) = &config.database_path {
-                // SQLite DB をオープンして INSERT OR REPLACE を実行
-                // uuid が既存の場合はレコード全体を置き換える
-                let conn = rusqlite::Connection::open(path)?;
-                conn.execute(
-                    "INSERT OR REPLACE INTO download_tbl \
-                     (uuid, download_count, expires_at, zip_password, url, auth_mode, auth_info, \
-                      expire_hours, max_downloads, created_at) \
-                     VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    rusqlite::params![
-                        record.uuid,
-                        record.expires_at,
-                        record.zip_password.as_deref(), // Option<String> → Option<&str>
-                        record.url,
-                        record.auth_mode,
-                        auth_info_str, // Option<String> → NULL or TEXT
-                        record.expire_hours,
-                        record.max_downloads,
-                        created_at
-                    ],
-                )?;
+                // tokio::task::spawn_blocking でブロッキング操作を専用スレッドにオフロード。
+                // rusqlite は同期 API のため Tokio ワーカー上での直接呼び出しを避ける。
+                let path_owned = path.clone();
+                let record_cloned = record.clone(); // Clone derive 済み
+                let auth_info_cloned = auth_info_str.clone();
+                let created_at_cloned = created_at.clone();
+
+                tokio::task::spawn_blocking(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                    let conn = rusqlite::Connection::open(&path_owned)?;
+                    // uuid が既存の場合はレコード全体を置き換える（INSERT OR REPLACE）
+                    conn.execute(
+                        "INSERT OR REPLACE INTO download_tbl \
+                         (uuid, download_count, expires_at, zip_password, url, auth_mode, auth_info, \
+                          expire_hours, max_downloads, created_at) \
+                         VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        rusqlite::params![
+                            record_cloned.uuid,
+                            record_cloned.expires_at,
+                            record_cloned.zip_password.as_deref(),
+                            record_cloned.url,
+                            record_cloned.auth_mode,
+                            auth_info_cloned,
+                            record_cloned.expire_hours,
+                            record_cloned.max_downloads,
+                            created_at_cloned
+                        ],
+                    )?;
+                    Ok(())
+                })
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)??;
             }
         }
 
         // ===== MySQL / MariaDB =====
         "mysql" => {
-            // 設定値を読み込み
-            let host = config.database_host.as_deref().unwrap_or("localhost");
+            // 設定値を読み込み（owned に変換して spawn_blocking クロージャに移動できるようにする）
+            let host = config
+                .database_host
+                .as_deref()
+                .unwrap_or("localhost")
+                .to_string();
             let port = config.database_port.unwrap_or(3306);
-            let user = config.database_user.as_deref().unwrap_or("");
-            let pass = config.database_password.as_deref().unwrap_or("");
-            let db = config.database_name.as_deref().unwrap_or("");
+            let user = config.database_user.as_deref().unwrap_or("").to_string();
+            let pass = config
+                .database_password
+                .as_deref()
+                .unwrap_or("")
+                .to_string();
+            let db = config.database_name.as_deref().unwrap_or("").to_string();
+            let record_cloned = record.clone();
+            let auth_info_cloned = auth_info_str.clone();
+            let created_at_cloned = created_at.clone();
 
-            // mysql クレートは毎回 Pool を生成するが、
-            // 通常の運用では DB 接続頻度が低いため現状はプールを使い捨てにしている
-            let url = format!("mysql://{}:{}@{}:{}/{}", user, pass, host, port, db);
-            let opts = mysql::Opts::from_url(&url)?;
-            let pool = mysql::Pool::new(opts)?;
-            let mut conn = pool.get_conn()?;
+            // mysql クレートは同期 API のため spawn_blocking でオフロード
+            tokio::task::spawn_blocking(
+                move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                    let url = format!("mysql://{}:{}@{}:{}/{}", user, pass, host, port, db);
+                    let opts = mysql::Opts::from_url(&url)?;
+                    let pool = mysql::Pool::new(opts)?;
+                    let mut conn = pool.get_conn()?;
 
-            // REPLACE INTO は uuid が PRIMARY KEY に一致する既存行を削除してから挿入する
-            conn.exec_drop(
-                "REPLACE INTO download_tbl \
-                 (uuid, download_count, expires_at, zip_password, url, auth_mode, auth_info, \
-                  expire_hours, max_downloads, created_at) \
-                 VALUES (:uuid, 0, :expires_at, :zip_password, :url, :auth_mode, :auth_info, \
-                  :expire_hours, :max_downloads, :created_at)",
-                mysql::params! {
-                    "uuid"          => &record.uuid,
-                    "expires_at"    => &record.expires_at,
-                    "zip_password"  => record.zip_password.as_deref(), // Option<&str> で NULL 送信
-                    "url"           => &record.url,
-                    "auth_mode"     => &record.auth_mode,
-                    "auth_info"     => auth_info_str.as_deref().unwrap_or(""), // None → 空文字
-                    "expire_hours"  => record.expire_hours,
-                    "max_downloads" => record.max_downloads,
-                    "created_at"    => &created_at,
+                    // REPLACE INTO は uuid が PRIMARY KEY に一致する既存行を削除してから挿入する
+                    conn.exec_drop(
+                        "REPLACE INTO download_tbl \
+                     (uuid, download_count, expires_at, zip_password, url, auth_mode, auth_info, \
+                      expire_hours, max_downloads, created_at) \
+                     VALUES (:uuid, 0, :expires_at, :zip_password, :url, :auth_mode, :auth_info, \
+                      :expire_hours, :max_downloads, :created_at)",
+                        mysql::params! {
+                            "uuid"          => &record_cloned.uuid,
+                            "expires_at"    => &record_cloned.expires_at,
+                            "zip_password"  => record_cloned.zip_password.as_deref(),
+                            "url"           => &record_cloned.url,
+                            "auth_mode"     => &record_cloned.auth_mode,
+                            "auth_info"     => auth_info_cloned.as_deref().unwrap_or(""),
+                            "expire_hours"  => record_cloned.expire_hours,
+                            "max_downloads" => record_cloned.max_downloads,
+                            "created_at"    => &created_at_cloned,
+                        },
+                    )?;
+                    Ok(())
                 },
-            )?;
+            )
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)??;
         }
 
         // ===== PostgreSQL =====

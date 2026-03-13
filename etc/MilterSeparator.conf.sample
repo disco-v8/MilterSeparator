@@ -1,16 +1,46 @@
-# MilterSeparator Configuration File
-# 
-# This file configures the MilterSeparator server settings.
-# Reload configuration by sending SIGHUP signal to the process.
+# =============================================================================
+#Log File & Level
+#  info: 通常ログ
+#  trace: トレースログ（詳細なデバッグ情報）
+#  debug: デバッグログ
+# =============================================================================
+Log_file	/var/log/milterseparator.log
+Log_level	info
 
-# Server listen address and port
-# Format: IP:PORT or just PORT (for dual-stack [::]:PORT)
-# Examples:
-#   Listen 8895                    # IPv4/IPv6 dual-stack on port 8895
-#   Listen 192.168.1.100:4000     # IPv4 specific address
-#   Listen [::1]:8895              # IPv6 localhost
-Listen [::]:8895
+# =============================================================================
+#Listen 8895                # OK（ポートのみ指定時はIPv4/IPv6デュアルスタック）
+#Listen 192.168.0.10:4000   # OK（明示アドレスとポート）
+# =============================================================================
+Listen	8895
 
-# Client inactivity timeout in seconds
-# Clients will be disconnected if no data is received within this time
-Client_timeout 30
+# =============================================================================
+#Client_timeout [秒]
+# =============================================================================
+Client_timeout	30
+
+# =============================================================================
+#RemoteIP_Target 0          # 外部からのメールのみ対象(デフォルト)
+#RemoteIP_Target 1          # 内部からのメールのみ対象
+#RemoteIP_Target 2          # 全てのメールを対象
+# =============================================================================
+RemoteIP_Target  2
+
+# =============================================================================
+#milter_user [ユーザー名]
+#  MilterSeparator がストレージディレクトリや SQLite DB ファイルを新規作成する際に
+#  chown で設定するサービス実行ユーザー名。
+#  デフォルト: milter
+#milter_user	milter_user
+#milter_group [グループ名]
+#  chown で設定するグループ名。Web サーバー（Apache/PHP-FPM 等）が SQLite の
+#  ジャーナルファイルを作成できるよう、Web プロセスのグループに合わせること。
+#  デフォルト: apache
+#milter_group	web_group
+# =============================================================================
+milter_user	milter
+milter_group	apache
+
+# =============================================================================
+#Include Directory
+# =============================================================================
+include /etc/MilterSeparator.d/

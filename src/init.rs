@@ -66,6 +66,25 @@ pub struct Config {
     // Service user/group for ownership when creating storage/db files
     pub milter_user: String,
     pub milter_group: String,
+
+    // =========================================================
+    // メールボディ変更機能設定
+    // =========================================================
+    /// 添付ファイルをメール本文から削除するかどうか（yes=削除, no=削除しない）。
+    /// ZIP 保存後も元のメール本文では添付パートが残るため、削除したい場合は yes に設定する。
+    pub remove_attachments_from_body: bool,
+
+    /// 最初の text/plain パート先頭にダウンロード情報を挿入するかどうか。
+    /// DownloadInfoHeadTemplate.txt のレンダリング結果を先頭に追加する。
+    pub insert_download_info_head: bool,
+
+    /// 最初の text/plain パート末尾にダウンロード情報を挿入するかどうか。
+    /// DownloadInfoTailTemplate.txt のレンダリング結果を末尾に追加する。
+    pub insert_download_info_tail: bool,
+
+    /// 新規の text/plain パートとしてダウンロード情報を追加するかどうか。
+    /// 既存パートを変更せず、DownloadInfoTextTemplate.txt を使った新パートを末尾に追加する。
+    pub add_download_info_as_new_text_part: bool,
 }
 
 // ログレベル定数定義
@@ -126,6 +145,11 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
         counter_cgi: String,
         milter_user: String,
         milter_group: String,
+        // メールボディ変更機能設定フラグ
+        remove_attachments_from_body: bool,
+        insert_download_info_head: bool,
+        insert_download_info_tail: bool,
+        add_download_info_as_new_text_part: bool,
     }
 
     // 設定テキスト行単位解析関数
@@ -183,6 +207,10 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
                 || line.starts_with("counter_cgi")
                 || line.starts_with("milter_user")
                 || line.starts_with("milter_group")
+                || line.starts_with("Remove_Attachments_From_Body")
+                || line.starts_with("Insert_Download_Info_Position_head")
+                || line.starts_with("Insert_Download_Info_Position_tail")
+                || line.starts_with("Add_Download_Info_As_New_Text_Part")
         }
 
         // 複数行にわたる設定値を収集する統一関数
@@ -512,6 +540,39 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
                     }
                 }
             }
+            // Remove_Attachments_From_Body 設定 - 添付ファイルをメール本文から削除するか
+            else if line.starts_with("Remove_Attachments_From_Body") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim().to_ascii_lowercase();
+                    values.remove_attachments_from_body = v == "yes" || v == "true" || v == "1";
+                }
+            }
+            // Insert_Download_Info_Position_head 設定 - 先頭にダウンロード情報を挿入するか
+            else if line.starts_with("Insert_Download_Info_Position_head") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim().to_ascii_lowercase();
+                    values.insert_download_info_head = v == "yes" || v == "true" || v == "1";
+                }
+            }
+            // Insert_Download_Info_Position_tail 設定 - 末尾にダウンロード情報を挿入するか
+            else if line.starts_with("Insert_Download_Info_Position_tail") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim().to_ascii_lowercase();
+                    values.insert_download_info_tail = v == "yes" || v == "true" || v == "1";
+                }
+            }
+            // Add_Download_Info_As_New_Text_Part 設定 - 新規 text/plain パートとしてダウンロード情報を追加するか
+            else if line.starts_with("Add_Download_Info_As_New_Text_Part") {
+                if let Some((_, value)) = split_key_value(line) {
+                    let full_value = collect_multiline_value(&mut lines, value, false);
+                    let v = full_value.trim().to_ascii_lowercase();
+                    values.add_download_info_as_new_text_part =
+                        v == "yes" || v == "true" || v == "1";
+                }
+            }
             // include ディレクトリの再帰読み込み処理
             else if line.starts_with("include") {
                 crate::printdaytimeln!(LOG_DEBUG, "[init] processing include line: {}", line);
@@ -615,6 +676,11 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
         counter_cgi: "count.cgi".to_string(),
         milter_user: "milter".to_string(),
         milter_group: "apache".to_string(),
+        // メールボディ変更機能設定（デフォルト: 全て無効）
+        remove_attachments_from_body: false,
+        insert_download_info_head: false,
+        insert_download_info_tail: false,
+        add_download_info_as_new_text_part: false,
     };
 
     // 設定ファイル内容の解析実行
@@ -664,5 +730,9 @@ pub fn load_config<P: AsRef<std::path::Path>>(path: P) -> Config {
         counter_cgi: values.counter_cgi,
         milter_user: values.milter_user,
         milter_group: values.milter_group,
+        remove_attachments_from_body: values.remove_attachments_from_body,
+        insert_download_info_head: values.insert_download_info_head,
+        insert_download_info_tail: values.insert_download_info_tail,
+        add_download_info_as_new_text_part: values.add_download_info_as_new_text_part,
     }
 }

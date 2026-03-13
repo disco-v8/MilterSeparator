@@ -27,7 +27,7 @@ use crate::{
     init::{LOG_DEBUG, LOG_INFO, LOG_TRACE},
     milter::{
         decode_body, decode_connect, decode_data_macros, decode_header, decode_helo, decode_optneg,
-        send_milter_response,
+        send_milter_response, send_replace_body,
     },
 }; // Milterコマンド種別定義・判定 // 各Milterコマンドの分解・応答処理
 
@@ -248,7 +248,8 @@ pub async fn handle_client(
             } else if let MilterCommand::Eoh = cmd {
                 if is_body_eob {
                     // パース処理でメール全体をパース・デバッグ出力・構造化
-                    if parse_mail(
+                    // parse_mail は async 関数のため .await で待機する
+                    if let Some(parse_result) = parse_mail(
                         &header_fields,
                         &body_field,
                         &macro_fields,
@@ -256,13 +257,39 @@ pub async fn handle_client(
                         config_val.remote_ip_target,
                         &config_val,
                     )
-                    .is_some()
+                    .await
                     {
+                        // ====================================================
+                        // 機能1〜3: ボディ変更がある場合は SMFIR_REPLBODY 送信
+                        //
+                        // parse_mail が modified_body を返した場合、MTA に対して
+                        // SMFIR_REPLBODY (0x62) でメール本文を差し替えるよう指示する。
+                        // SMFIR_REPLBODY は SMFIR_ACCEPT より前に送信しなければならない。
+                        // ====================================================
+                        if let Some(ref new_body) = parse_result.modified_body {
+                            crate::printdaytimeln!(
+                                LOG_INFO,
+                                "[client] sending SMFIR_REPLBODY ({} bytes) to {}",
+                                new_body.len(),
+                                peer_addr
+                            );
+                            if let Err(e) = send_replace_body(&mut stream, new_body).await {
+                                crate::printdaytimeln!(
+                                    LOG_INFO,
+                                    "[client] SMFIR_REPLBODY send error: {}: {}",
+                                    peer_addr,
+                                    e
+                                );
+                                // 送信失敗してもメール処理は続行（ボディ変更なしで受理）
+                            }
+                        }
+
                         crate::printdaytimeln!(
                             LOG_INFO,
-                            "[client] parsed mail, returning CONTINUE to {}",
+                            "[client] parsed mail, returning ACCEPT to {}",
                             peer_addr
                         );
+                        // 最終応答（ボディ変更有無にかかわらず CONTINUE/ACCEPT を送信）
                         let response = Some(("CONTINUE".to_string(), "continue".to_string()));
                         send_milter_response(&mut stream, &peer_addr, response).await;
                     }
